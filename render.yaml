@@ -6,8 +6,5 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "uvicorn app.main:app --host 0.0.0.0 --port 10000"
     envVars:
-      - key: DATABASE_URL
-      - key: TELEGRAM_BOT_TOKEN
-      - key: TELEGRAM_CHANNEL_ID
       - key: RUN_SCHEDULER
         value: "true"
