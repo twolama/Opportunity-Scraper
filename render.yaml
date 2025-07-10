@@ -1,18 +1,20 @@
 services:
   - type: web
     name: opportunity-scraper-web
-    env: python
+    runtime: python
+    repo: https://github.com/mechatemesgen/Opportunity-Scraper
     plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port 10000"
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 10000
+    autoDeploy: true
+    autoDeployTrigger: commit
     envVars:
       - key: DATABASE_URL
-        value: ""
+        sync: false  # Set in Render dashboard
       - key: TELEGRAM_BOT_TOKEN
-        sync: false
-        value: ""
+        sync: false  # Set in Render dashboard
       - key: TELEGRAM_CHANNEL_ID
-        sync: false
-        value: ""
+        sync: false  # Set in Render dashboard
       - key: RUN_SCHEDULER
         value: "true"
