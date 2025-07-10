@@ -12,3 +12,5 @@ services:
         value: your-bot-token
       - key: TELEGRAM_CHANNEL_ID
         value: your-channel-id
+      - key: RUN_SCHEDULER
+        value: "true"
