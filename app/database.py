@@ -100,3 +100,18 @@ def get_all_opportunities():
         })
 
     return opportunities
+
+
+
+def delete_old_entries():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    month_ago = datetime.now() - timedelta(days=30)
+    cursor.execute("DELETE FROM opportunities WHERE created_at < ?", (month_ago.isoformat(),))
+
+    deleted = cursor.rowcount  # number of deleted rows
+    conn.commit()
+    conn.close()
+
+    print(f"🧹 Deleted {deleted} old opportunities (older than 30 days).")
