@@ -35,6 +35,10 @@ async def root():
 async def ping():
     return {"status": "ok"}
 
+@app.head("/ping")
+async def ping_head():
+    return
+
 @app.get("/opportunities")
 async def get_opportunities():
     # Run blocking DB query asynchronously to avoid blocking event loop
