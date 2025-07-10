@@ -13,6 +13,8 @@ def start_scheduler():
     schedule.every().day.at("08:00").do(run_daily_tasks)
     schedule.every().day.at("14:00").do(run_daily_tasks)
     schedule.every().day.at("20:00").do(run_daily_tasks)
+    
+    schedule.every().day.at("13:20").do(run_daily_tasks)
 
     while True:
         schedule.run_pending()
