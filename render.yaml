@@ -7,7 +7,7 @@ services:
     startCommand: "uvicorn app.main:app --host 0.0.0.0 --port 10000"
     envVars:
       - key: DATABASE_URL
-        value: your-postgres-url-here
+        value: postgresql://postgres.zqriclljqksghzahpkuu:gh7PabgDVRVGCn1J@aws-0-eu-north-1.pooler.supabase.com:6543/postgres
       - key: TELEGRAM_BOT_TOKEN
         value: your-bot-token
       - key: TELEGRAM_CHANNEL_ID
