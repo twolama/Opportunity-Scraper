@@ -1,29 +1,35 @@
 services:
   - type: web
-    name: opportunity-bot-api
+    name: opportunity-bot-web
     env: python
-    region: oregon  # or "frankfurt", "singapore", etc.
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port 10000
     envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: opportunity-db
+          property: connectionString
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHANNEL_ID
         sync: false
-      - key: DB_PATH
-        value: data/opportunities.db
-    autoDeploy: true
 
-  - type: cron
-    name: daily-scraper
+  - type: worker
+    name: opportunity-bot-scheduler
     env: python
-    schedule: "0 6 * * *"  # Every day at 6:00 AM UTC
-    command: python app/scraper.py
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app/worker.py
     envVars:
-      - key: DB_PATH
-        value: data/opportunities.db
+      - key: DATABASE_URL
+        fromDatabase:
+          name: opportunity-db
+          property: connectionString
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_CHANNEL_ID
         sync: false
+
+databases:
+  - name: opportunity-db
