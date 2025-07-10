@@ -55,3 +55,48 @@ def update_posted_status(opportunity_id: int):
     cursor.execute("UPDATE opportunities SET posted_to_telegram = 1 WHERE id = ?", (opportunity_id,))
     conn.commit()
     conn.close()
+
+def get_unposted_opportunities():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, title, link, description, deadline, thumbnail, tags FROM opportunities WHERE posted_to_telegram = 0")
+    rows = c.fetchall()
+    conn.close()
+    opportunities = []
+    for row in rows:
+        opportunities.append({
+            "id": row[0],
+            "title": row[1],
+            "link": row[2],
+            "description": row[3],
+            "deadline": row[4],
+            "thumbnail": row[5],
+            "tags": row[6].split(", ") if row[6] else []
+        })
+    return opportunities
+
+
+def get_all_opportunities():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, title, link, description, deadline, thumbnail, tags, created_at, posted_to_telegram FROM opportunities ORDER BY created_at DESC")
+    rows = c.fetchall()
+    conn.close()
+
+    print(f"Fetched {len(rows)} opportunities from DB")  # DEBUG
+
+    opportunities = []
+    for row in rows:
+        opportunities.append({
+            "id": row[0],
+            "title": row[1],
+            "link": row[2],
+            "description": row[3],
+            "deadline": row[4],
+            "thumbnail": row[5],
+            "tags": row[6].split(", ") if row[6] else [],
+            "created_at": row[7],
+            "posted_to_telegram": bool(row[8]),
+        })
+
+    return opportunities

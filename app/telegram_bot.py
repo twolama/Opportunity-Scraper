@@ -1,7 +1,7 @@
 import os
 from dotenv import load_dotenv
 import requests
-from app.database import update_posted_status  # helper to mark opportunities as posted
+from app.database import update_posted_status, get_unposted_opportunities  # helper to mark opportunities as posted
 from app.utils import format_telegram_message  # helper for clean message formatting
 
 load_dotenv()
@@ -50,3 +50,16 @@ def post_to_telegram(opportunity: dict) -> bool:
     except Exception as e:
         print(f"❌ Exception while posting to Telegram: {e}")
         return False
+
+def post_new_opportunities():
+    """Fetch unposted opportunities from DB and post them to Telegram."""
+    opportunities = get_unposted_opportunities()
+    if not opportunities:
+        print("No new opportunities to post.")
+        return
+    for opp in opportunities:
+        posted = post_to_telegram(opp)
+        if posted:
+            print(f"Posted: {opp['title']}")
+        else:
+            print(f"Failed to post: {opp['title']}")
