@@ -4,9 +4,14 @@ from fastapi import FastAPI
 from threading import Thread
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.scheduler import start_scheduler
-from app.database import init_db, get_all_opportunities, get_unposted_opportunities
-from app.telegram_bot import post_new_opportunities
+from app.scheduler import start_scheduler, run_daily_tasks
+from app.database import (
+    init_db,
+    get_all_opportunities,
+    get_unposted_opportunities,
+    SessionLocal,
+    Opportunity,
+)
 
 app = FastAPI()
 
@@ -21,12 +26,11 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup():
-    # Create DB tables if missing
     init_db()
-
-    # Only start scheduler if RUN_SCHEDULER env var is true or unset (default true)
+    # Start scheduler in a background thread
     if os.getenv("RUN_SCHEDULER", "true").lower() == "true":
         Thread(target=start_scheduler, daemon=True).start()
+        print("🟢 Scheduler started")
 
 @app.get("/")
 async def root():
@@ -42,20 +46,16 @@ async def ping_head():
 
 @app.get("/opportunities")
 async def get_opportunities():
-    # Run blocking DB query asynchronously to avoid blocking event loop
     loop = asyncio.get_running_loop()
-    opportunities = await loop.run_in_executor(None, get_all_opportunities)
-    return opportunities
+    return await loop.run_in_executor(None, get_all_opportunities)
 
 @app.get("/opportunities/unposted")
 async def get_unposted():
     loop = asyncio.get_running_loop()
-    unposted = await loop.run_in_executor(None, get_unposted_opportunities)
-    return unposted
+    return await loop.run_in_executor(None, get_unposted_opportunities)
 
 @app.get("/opportunities/posted")
 async def get_posted():
-    from app.database import SessionLocal, Opportunity
     def fetch_posted():
         db = SessionLocal()
         try:
@@ -77,6 +77,13 @@ async def get_posted():
         finally:
             db.close()
     loop = asyncio.get_running_loop()
-    posted = await loop.run_in_executor(None, fetch_posted)
-    return posted
+    return await loop.run_in_executor(None, fetch_posted)
 
+# ✅ Optional: Trigger the task manually (for testing via browser)
+@app.get("/run-once")
+async def run_once():
+    def run():
+        run_daily_tasks()
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, run)
+    return {"status": "Scheduler manually triggered."}

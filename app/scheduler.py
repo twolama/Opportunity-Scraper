@@ -8,6 +8,7 @@ from app.database import delete_old_entries
 logger = logging.getLogger(__name__)
 
 def run_daily_tasks():
+    print("🔁 Running scheduled job...")
     logger.info("Scheduler task started")
     fetch_opportunities_by_date()  # use yesterday by default
     post_new_opportunities()
