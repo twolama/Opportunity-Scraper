@@ -5,7 +5,8 @@ from threading import Thread
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.scheduler import start_scheduler
-from app.database import init_db, get_all_opportunities
+from app.database import init_db, get_all_opportunities, get_unposted_opportunities
+from app.telegram_bot import post_new_opportunities
 
 app = FastAPI()
 
@@ -45,3 +46,37 @@ async def get_opportunities():
     loop = asyncio.get_running_loop()
     opportunities = await loop.run_in_executor(None, get_all_opportunities)
     return opportunities
+
+@app.get("/opportunities/unposted")
+async def get_unposted():
+    loop = asyncio.get_running_loop()
+    unposted = await loop.run_in_executor(None, get_unposted_opportunities)
+    return unposted
+
+@app.get("/opportunities/posted")
+async def get_posted():
+    from app.database import SessionLocal, Opportunity
+    def fetch_posted():
+        db = SessionLocal()
+        try:
+            results = db.query(Opportunity).filter_by(posted_to_telegram=True).all()
+            return [
+                {
+                    "id": opp.id,
+                    "title": opp.title,
+                    "link": opp.link,
+                    "description": opp.description,
+                    "deadline": opp.deadline,
+                    "thumbnail": opp.thumbnail,
+                    "tags": opp.tags.split(", ") if opp.tags else [],
+                    "created_at": opp.created_at,
+                    "posted_to_telegram": opp.posted_to_telegram,
+                }
+                for opp in results
+            ]
+        finally:
+            db.close()
+    loop = asyncio.get_running_loop()
+    posted = await loop.run_in_executor(None, fetch_posted)
+    return posted
+
