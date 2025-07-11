@@ -54,6 +54,12 @@ The scheduler will run automatically on startup (unless disabled via `RUN_SCHEDU
   Returns `{ "status": "ok" }`
 - **List Opportunities:** `/opportunities`  
   Returns a list of all stored opportunities.
+- **List Unposted Opportunities:** `/opportunities/unposted`  
+  Returns a list of opportunities not yet posted to Telegram.
+- **List Posted Opportunities:** `/opportunities/posted`  
+  Returns a list of opportunities already posted to Telegram.
+- **Manually Trigger Scheduler:** `/run-once`  
+  Triggers the scraping/posting tasks once (for testing).
 
 ---
 
