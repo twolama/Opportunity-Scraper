@@ -20,7 +20,7 @@ def start_scheduler():
     schedule.every().day.at("10:59").do(run_daily_tasks)  # 01:59 PM Ethiopia
     schedule.every().day.at("16:59").do(run_daily_tasks)  # 07:59 PM Ethiopia
     
-    schedule.every().day.at("05:29").do(run_daily_tasks)  # 08:29 PM Ethiopia
+    schedule.every().day.at("05:53").do(run_daily_tasks)  # 08:53 PM Ethiopia
 
     
     
