@@ -16,10 +16,10 @@ def run_daily_tasks():
     logger.info("Scheduler task completed")
 
 def start_scheduler():
-    schedule.every().day.at("07:59").do(run_daily_tasks)
-    schedule.every().day.at("13:59").do(run_daily_tasks)
-    schedule.every().day.at("19:59").do(run_daily_tasks)
-
+    schedule.every().day.at("04:59").do(run_daily_tasks)  # 07:59 AM Ethiopia
+    schedule.every().day.at("10:59").do(run_daily_tasks)  # 01:59 PM Ethiopia
+    schedule.every().day.at("16:59").do(run_daily_tasks)  # 07:59 PM Ethiopia
+    
     while True:
         schedule.run_pending()
         time.sleep(30)
