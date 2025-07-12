@@ -20,6 +20,10 @@ def start_scheduler():
     schedule.every().day.at("10:59").do(run_daily_tasks)  # 01:59 PM Ethiopia
     schedule.every().day.at("16:59").do(run_daily_tasks)  # 07:59 PM Ethiopia
     
+    schedule.every().day.at("05:19").do(run_daily_tasks)  # 08:19 PM Ethiopia
+
+    
+    
     while True:
         schedule.run_pending()
         time.sleep(30)
