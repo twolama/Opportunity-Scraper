@@ -1,4 +1,3 @@
-
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -6,179 +5,37 @@ import time
 import random
 from datetime import datetime, timedelta
 import sys
-from urllib.parse import urlparse
-try:
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.common.by import By
-    SELENIUM_AVAILABLE = True
-except ImportError:
-    SELENIUM_AVAILABLE = False
 
 from app.database import save_opportunity, opportunity_exists
 
 BASE_URL = "https://opportunitydesk.org"
 
-
 USER_AGENTS = [
-    # Chrome (Windows, Mac, Linux)
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    # Firefox
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13.4; rv:125.0) Gecko/20100101 Firefox/125.0",
-    # Edge
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
-    # Safari
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
-    # Mobile
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Linux; Android 14; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-]
-
-
-# More realistic browser headers, including Accept-Encoding, Origin, Host, etc.
-BROWSER_HEADERS = [
-    {
-        "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", ";Not A Brand";v="99"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Origin": BASE_URL,
-        "Host": urlparse(BASE_URL).netloc,
-    },
-    {
-        "sec-ch-ua": '"Chromium";v="124", "Not.A/Brand";v="99", "Google Chrome";v="124"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Linux"',
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Origin": BASE_URL,
-        "Host": urlparse(BASE_URL).netloc,
-    },
-    {
-        "sec-ch-ua": '"Chromium";v="124", "Not.A/Brand";v="99", "Google Chrome";v="124"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"macOS"',
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Origin": BASE_URL,
-        "Host": urlparse(BASE_URL).netloc,
-    },
-]
-
-REFERERS = [
-    BASE_URL + "/",
-    BASE_URL + "/about/",
-    "https://www.google.com/",
-    "https://www.bing.com/",
-    "https://duckduckgo.com/",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/15.1 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
 def random_headers():
-    headers = {
+    return {
         "User-Agent": random.choice(USER_AGENTS),
-        "Accept": random.choice([
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        ]),
-        "Accept-Language": random.choice(["en-US,en;q=0.9", "en-GB,en;q=0.8", "en;q=0.7"]),
-        "Connection": "keep-alive",
-        "Referer": random.choice(REFERERS),
-        "DNT": "1",
-        "Upgrade-Insecure-Requests": "1",
-        "Pragma": "no-cache",
-        "Cache-Control": "no-cache",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Connection": "keep-alive"
     }
-    # Add random browser headers
-    headers.update(random.choice(BROWSER_HEADERS))
-    # Add random cookie header (simulate browser session)
-    cookies = [
-        "cookieconsent_status=allow",
-        f"_ga={random.randint(10000000,99999999)}.{random.randint(1000000000,9999999999)}",
-        f"_gid={random.randint(10000000,99999999)}.{random.randint(1000000000,9999999999)}",
-        f"wordpress_logged_in_{random.randint(10000,99999)}=user%7C{random.randint(1000000000,9999999999)}%7C{random.randint(1000000000,9999999999)}%7C{random.randint(1000000000,9999999999)}%7C{random.randint(1000000000,9999999999)}%7C{random.randint(1000000000,9999999999)}",
-    ]
-    if random.random() > 0.5:
-        headers["Cookie"] = "; ".join(cookies)
-    # Randomize header order
-    items = list(headers.items())
-    random.shuffle(items)
-    return dict(items)
-
-# Optional: Proxy support (set to None or a list of proxies)
-PROXIES = None  # Example: ["http://proxy1:port", "http://proxy2:port"]
 
 def safe_get(session, url, max_retries=5):
-    last_exception = None
     for i in range(max_retries):
         try:
-            proxies = None
-            if PROXIES:
-                proxy = random.choice(PROXIES)
-                proxies = {"http": proxy, "https": proxy}
-            headers = random_headers()
-            response = session.get(
-                url,
-                headers=headers,
-                timeout=30,
-                proxies=proxies,
-                allow_redirects=True
-            )
-            # Emulate browser cookies (set on first request)
-            if not session.cookies:
-                session.cookies.set("cookieconsent_status", "allow")
+            response = session.get(url, headers=random_headers(), timeout=30)
             response.raise_for_status()
-            # Add a random delay after each request
-            time.sleep(random.uniform(1.5, 3.5))
-            # If we get a 403 but content looks like a real page, still return
-            if response.status_code == 403 and 'captcha' in response.text.lower():
-                raise requests.exceptions.RequestException("Blocked by CAPTCHA")
             return response
         except requests.exceptions.RequestException as e:
-            last_exception = e
             print(f"⚠️ Attempt {i + 1} failed for {url}: {e}")
-            # Stronger random backoff
-            time.sleep((2 ** i) + random.uniform(2, 6))
-
-    # Fallback: Use Selenium if available and all requests failed
-    if SELENIUM_AVAILABLE:
-        print(f"🔄 All requests failed for {url}, trying with Selenium...")
-        try:
-            chrome_options = Options()
-            chrome_options.add_argument('--headless')
-            chrome_options.add_argument('--disable-gpu')
-            chrome_options.add_argument('--no-sandbox')
-            chrome_options.add_argument('--window-size=1920,1080')
-            chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-            chrome_options.add_argument(f'user-agent={random.choice(USER_AGENTS)}')
-            driver = webdriver.Chrome(options=chrome_options)
-            driver.get(url)
-            time.sleep(random.uniform(3, 6))
-            page_source = driver.page_source
-            driver.quit()
-            # Fake a requests.Response-like object
-            class DummyResponse:
-                def __init__(self, text):
-                    self.text = text
-                    self.status_code = 200
-                def raise_for_status(self):
-                    pass
-            return DummyResponse(page_source)
-        except Exception as e:
-            print(f"❌ Selenium also failed for {url}: {e}")
-            return None
+            time.sleep((2 ** i) + random.uniform(2, 4))
     return None
 
 def extract_detail_info(session, detail_url):
