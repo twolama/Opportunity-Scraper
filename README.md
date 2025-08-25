@@ -80,6 +80,19 @@ render.yaml             # (Optional) Render.com deployment config
 data/                   # (Optional) Data storage
 ```
 
+
+### Using Docker
+
+Build the Docker image:
+```bash
+docker build -t opportunity-scraper .
+```
+
+Run the container with environment variables from `.env` and expose port 8000:
+```bash
+docker run --env-file .env -p 8000:8000 opportunity-scraper
+```
+
 ---
 
 ## Deployment
