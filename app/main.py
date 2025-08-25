@@ -1,3 +1,5 @@
+# Define your Telegram user ID here
+BOT_OWNER_ID = 123456789  # <-- Replace with your Telegram user ID
 import os
 import asyncio
 from fastapi import FastAPI, Request, BackgroundTasks
@@ -121,8 +123,26 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     text = None
     if message:
         chat_id = message["chat"]["id"]
+        user_id = message["from"]["id"]
+        if user_id != BOT_OWNER_ID:
+                requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                    "chat_id": chat_id,
+                    "text": "Sorry, you are not authorized to control this bot."
+                })
+                return {"ok": True}
         text = message.get("text", "")
     elif callback_query:
+        # Always answer callback query to avoid Telegram UI spinner
+        callback_id = callback_query.get("id")
+        user_id = callback_query["from"]["id"]
+        chat_id = callback_query["message"]["chat"]["id"]
+        if user_id != BOT_OWNER_ID:
+                callback_id = callback_query.get("id")
+                if callback_id:
+                    requests.post(f"{TELEGRAM_API_URL}/answerCallbackQuery", json={"callback_query_id": callback_id, "text": "Not authorized.", "show_alert": True})
+                return {"ok": True}
+        if callback_id:
+            requests.post(f"{TELEGRAM_API_URL}/answerCallbackQuery", json={"callback_query_id": callback_id})
         chat_id = callback_query["message"]["chat"]["id"]
         text = callback_query["data"]
 
@@ -143,44 +163,80 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     elif callback_query:
         # Date navigation for posted/unposted
         if text.startswith("posted_pick_year"):
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            requests.post(f"{TELEGRAM_API_URL}/editMessageReplyMarkup", json={
                 "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "reply_markup": build_year_picker("posted")
+            })
+            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
                 "text": "Pick a year:",
-                "reply_markup": build_year_picker("posted"),
+                "parse_mode": "HTML"
             })
         elif text.startswith("posted_pick_month_"):
             year = int(text.split("_")[-1])
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            requests.post(f"{TELEGRAM_API_URL}/editMessageReplyMarkup", json={
                 "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "reply_markup": build_month_picker("posted", year)
+            })
+            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
                 "text": f"Pick a month for {year}:",
-                "reply_markup": build_month_picker("posted", year),
+                "parse_mode": "HTML"
             })
         elif text.startswith("posted_pick_day_"):
             year_month = text.split("_")[-1]
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            requests.post(f"{TELEGRAM_API_URL}/editMessageReplyMarkup", json={
                 "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "reply_markup": build_day_picker("posted", year_month)
+            })
+            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
                 "text": f"Pick a day for {year_month}:",
-                "reply_markup": build_day_picker("posted", year_month),
+                "parse_mode": "HTML"
             })
         elif text.startswith("unposted_pick_year"):
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            requests.post(f"{TELEGRAM_API_URL}/editMessageReplyMarkup", json={
                 "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "reply_markup": build_year_picker("unposted")
+            })
+            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
                 "text": "Pick a year:",
-                "reply_markup": build_year_picker("unposted"),
+                "parse_mode": "HTML"
             })
         elif text.startswith("unposted_pick_month_"):
             year = int(text.split("_")[-1])
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            requests.post(f"{TELEGRAM_API_URL}/editMessageReplyMarkup", json={
                 "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "reply_markup": build_month_picker("unposted", year)
+            })
+            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
                 "text": f"Pick a month for {year}:",
-                "reply_markup": build_month_picker("unposted", year),
+                "parse_mode": "HTML"
             })
         elif text.startswith("unposted_pick_day_"):
             year_month = text.split("_")[-1]
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            requests.post(f"{TELEGRAM_API_URL}/editMessageReplyMarkup", json={
                 "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "reply_markup": build_day_picker("unposted", year_month)
+            })
+            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
                 "text": f"Pick a day for {year_month}:",
-                "reply_markup": build_day_picker("unposted", year_month),
+                "parse_mode": "HTML"
             })
         # Existing date navigation for posted/unposted
         elif text.startswith("posted_date_"):
