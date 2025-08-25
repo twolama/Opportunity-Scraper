@@ -40,6 +40,7 @@ def get_stats():
         "last_posted": last_posted_time
     }
 
+from datetime import datetime, timedelta
 def build_main_menu():
     return {
         "inline_keyboard": [
@@ -52,7 +53,31 @@ def build_main_menu():
                 {"text": "🟢 Posted", "callback_data": "list_posted"}
             ],
             [
+                {"text": "📅 Go to Date", "callback_data": "goto_date_menu"}
+            ],
+            [
                 {"text": "ℹ️ About", "callback_data": "about"}
+            ]
+        ]
+    }
+
+def build_date_nav_keyboard(date_str, mode):
+    # mode: 'posted' or 'unposted'
+    date = datetime.strptime(date_str, "%Y-%m-%d")
+    prev_date = (date - timedelta(days=1)).strftime("%Y-%m-%d")
+    next_date = (date + timedelta(days=1)).strftime("%Y-%m-%d")
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "⬅️ Previous", "callback_data": f"{mode}_date_{prev_date}"},
+                {"text": f"{date_str}", "callback_data": "noop"},
+                {"text": "Next ➡️", "callback_data": f"{mode}_date_{next_date}"}
+            ],
+            [
+                {"text": "📅 Pick Date", "callback_data": f"{mode}_pick_date"}
+            ],
+            [
+                {"text": "🔙 Main Menu", "callback_data": "main_menu"}
             ]
         ]
     }
@@ -86,7 +111,79 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             "parse_mode": "HTML"
         })
     elif callback_query:
-        if text == "scrape_today":
+        # Date navigation for posted/unposted
+        if text.startswith("posted_date_"):
+            date_str = text.replace("posted_date_", "")
+            from app.database import get_all_opportunities
+            posted = [op for op in get_all_opportunities() if op.get("posted_to_telegram")]
+            from collections import defaultdict
+            grouped = defaultdict(list)
+            for op in posted:
+                op_date = str(op.get("created_at", "N/A"))[:10]
+                grouped[op_date].append(op)
+            ops = grouped.get(date_str, [])
+            if not ops:
+                msg = f"<b>No posted opportunities for {date_str}.</b>"
+            else:
+                msg = f"<b>🟢 Posted Opportunities for {date_str}:</b>\n\n" + "\n\n".join([
+                    f"<b>{op['title']}</b>\n<a href='{op['link']}'>Details</a>\nDeadline: {op.get('deadline', 'N/A')}" for op in ops[:10]
+                ])
+            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                "chat_id": chat_id,
+                "text": msg,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+                "reply_markup": build_date_nav_keyboard(date_str, "posted")
+            })
+        elif text.startswith("unposted_date_"):
+            date_str = text.replace("unposted_date_", "")
+            from app.database import get_unposted_opportunities
+            unposted = get_unposted_opportunities()
+            from collections import defaultdict
+            grouped = defaultdict(list)
+            for op in unposted:
+                op_date = str(op.get("created_at", "N/A"))[:10]
+                grouped[op_date].append(op)
+            ops = grouped.get(date_str, [])
+            if not ops:
+                msg = f"<b>No unposted opportunities for {date_str}.</b>"
+            else:
+                msg = f"<b>🟡 Unposted Opportunities for {date_str}:</b>\n\n" + "\n\n".join([
+                    f"<b>{op['title']}</b>\n<a href='{op['link']}'>Apply / Details</a>\nDeadline: {op.get('deadline', 'N/A')}" for op in ops[:10]
+                ])
+            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                "chat_id": chat_id,
+                "text": msg,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+                "reply_markup": build_date_nav_keyboard(date_str, "unposted")
+            })
+        elif text == "main_menu":
+            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                "chat_id": chat_id,
+                "text": "Back to main menu.",
+                "reply_markup": build_main_menu(),
+                "parse_mode": "HTML"
+            })
+        elif text == "goto_date_menu":
+            today = datetime.utcnow().strftime("%Y-%m-%d")
+            keyboard = {
+                "inline_keyboard": [
+                    [
+                        {"text": "Posted by Date", "callback_data": f"posted_date_{today}"},
+                        {"text": "Unposted by Date", "callback_data": f"unposted_date_{today}"}
+                    ],
+                    [
+                        {"text": "🔙 Main Menu", "callback_data": "main_menu"}
+                    ]
+                ]
+            }
+            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                "chat_id": chat_id,
+                "text": "Choose which opportunities to view by date:",
+                "reply_markup": keyboard,
+                "parse_mode": "HTML"
+            })
             background_tasks.add_task(fetch_opportunities_by_date, target_date=None)
             requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
                 "chat_id": chat_id,
