@@ -1,5 +1,3 @@
-# Define your Telegram user ID here
-BOT_OWNER_ID = 123456789  # <-- Replace with your Telegram user ID
 import os
 import asyncio
 from fastapi import FastAPI, Request, BackgroundTasks
@@ -24,6 +22,8 @@ app = FastAPI()
 # --- Telegram Webhook Handler ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+
+BOT_OWNER_ID = int(os.getenv("BOT_OWNER_ID", "0"))
 
 def get_stats():
     from app.database import get_all_opportunities, get_unposted_opportunities
