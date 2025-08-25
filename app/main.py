@@ -116,6 +116,19 @@ def build_day_picker(mode, year_month):
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
+    import logging
+    def safe_edit_message_text(payload):
+        resp = requests.post(f"{TELEGRAM_API_URL}/editMessageText", json=payload)
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
+        if not resp.ok or not data.get("ok", True):
+            # If edit fails (e.g., message not found or not sent by bot), send a new message
+            logging.warning(f"editMessageText failed: {data}")
+            payload2 = payload.copy()
+            payload2.pop("message_id", None)
+            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload2)
     data = await request.json()
     message = data.get("message")
     callback_query = data.get("callback_query")
@@ -162,8 +175,13 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         })
     elif callback_query:
         # Date navigation for posted/unposted
-        if text.startswith("posted_pick_year"):
-            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+        if text == "noop":
+            # Just answer the callback, do nothing
+            callback_id = callback_query.get("id")
+            if callback_id:
+                requests.post(f"{TELEGRAM_API_URL}/answerCallbackQuery", json={"callback_query_id": callback_id})
+        elif text.startswith("posted_pick_year"):
+            safe_edit_message_text({
                 "chat_id": chat_id,
                 "message_id": callback_query["message"]["message_id"],
                 "text": "Pick a year:",
@@ -172,7 +190,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             })
         elif text.startswith("posted_pick_month_"):
             year = int(text.split("_")[-1])
-            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+            safe_edit_message_text({
                 "chat_id": chat_id,
                 "message_id": callback_query["message"]["message_id"],
                 "text": f"Pick a month for {year}:",
@@ -181,7 +199,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             })
         elif text.startswith("posted_pick_day_"):
             year_month = text.split("_")[-1]
-            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+            safe_edit_message_text({
                 "chat_id": chat_id,
                 "message_id": callback_query["message"]["message_id"],
                 "text": f"Pick a day for {year_month}:",
@@ -189,7 +207,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 "reply_markup": build_day_picker("posted", year_month)
             })
         elif text.startswith("unposted_pick_year"):
-            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+            safe_edit_message_text({
                 "chat_id": chat_id,
                 "message_id": callback_query["message"]["message_id"],
                 "text": "Pick a year:",
@@ -198,7 +216,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             })
         elif text.startswith("unposted_pick_month_"):
             year = int(text.split("_")[-1])
-            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+            safe_edit_message_text({
                 "chat_id": chat_id,
                 "message_id": callback_query["message"]["message_id"],
                 "text": f"Pick a month for {year}:",
@@ -207,7 +225,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             })
         elif text.startswith("unposted_pick_day_"):
             year_month = text.split("_")[-1]
-            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+            safe_edit_message_text({
                 "chat_id": chat_id,
                 "message_id": callback_query["message"]["message_id"],
                 "text": f"Pick a day for {year_month}:",
