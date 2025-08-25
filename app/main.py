@@ -189,7 +189,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 "reply_markup": build_year_picker("posted")
             })
         elif text.startswith("posted_pick_month_"):
-            year = int(text.split("_")[-1])
+            try:
+                year = int(text.split("posted_pick_month_")[-1])
+            except Exception:
+                year = datetime.utcnow().year
             safe_edit_message_text({
                 "chat_id": chat_id,
                 "message_id": callback_query["message"]["message_id"],
@@ -198,7 +201,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 "reply_markup": build_month_picker("posted", year)
             })
         elif text.startswith("posted_pick_day_"):
-            year_month = text.split("_")[-1]
+            try:
+                year_month = text.split("posted_pick_day_")[-1]
+            except Exception:
+                year_month = datetime.utcnow().strftime("%Y-%m")
             safe_edit_message_text({
                 "chat_id": chat_id,
                 "message_id": callback_query["message"]["message_id"],
@@ -215,7 +221,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 "reply_markup": build_year_picker("unposted")
             })
         elif text.startswith("unposted_pick_month_"):
-            year = int(text.split("_")[-1])
+            try:
+                year = int(text.split("unposted_pick_month_")[-1])
+            except Exception:
+                year = datetime.utcnow().year
             safe_edit_message_text({
                 "chat_id": chat_id,
                 "message_id": callback_query["message"]["message_id"],
@@ -224,7 +233,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 "reply_markup": build_month_picker("unposted", year)
             })
         elif text.startswith("unposted_pick_day_"):
-            year_month = text.split("_")[-1]
+            try:
+                year_month = text.split("unposted_pick_day_")[-1]
+            except Exception:
+                year_month = datetime.utcnow().strftime("%Y-%m")
             safe_edit_message_text({
                 "chat_id": chat_id,
                 "message_id": callback_query["message"]["message_id"],
@@ -232,7 +244,6 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 "parse_mode": "HTML",
                 "reply_markup": build_day_picker("unposted", year_month)
             })
-        # Existing date navigation for posted/unposted
         elif text.startswith("posted_date_"):
             date_str = text.replace("posted_date_", "")
             from app.database import get_all_opportunities
@@ -256,6 +267,12 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 "disable_web_page_preview": True,
                 "reply_markup": build_date_nav_keyboard(date_str, "posted")
             })
+        else:
+            # Log and answer any unhandled callback data
+            logging.warning(f"Unhandled callback data: {text}")
+            callback_id = callback_query.get("id")
+            if callback_id:
+                requests.post(f"{TELEGRAM_API_URL}/answerCallbackQuery", json={"callback_query_id": callback_id, "text": "Not implemented or invalid action.", "show_alert": False})
     elif text.startswith("unposted_date_"):
             date_str = text.replace("unposted_date_", "")
             from app.database import get_unposted_opportunities
