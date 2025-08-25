@@ -1,16 +1,16 @@
 services:
   - type: web
     name: opportunity-scraper-web
-    env: python
+    env: docker
     plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port 10000"
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
     envVars:
       - key: DATABASE_URL
-        value: postgresql://postgres.zqriclljqksghzahpkuu:gh7PabgDVRVGCn1J@aws-0-eu-north-1.pooler.supabase.com:6543/postgres
+        sync: false
       - key: TELEGRAM_BOT_TOKEN
-        value: your-bot-token
+        sync: false
       - key: TELEGRAM_CHANNEL_ID
-        value: your-channel-id
+        sync: false
       - key: RUN_SCHEDULER
         value: "true"
