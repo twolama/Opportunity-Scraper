@@ -163,6 +163,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         return {"ok": True}
 
     if message and text.startswith("/start"):
+        requests.post(f"{TELEGRAM_API_URL}/sendChatAction", json={
+            "chat_id": chat_id,
+            "action": "typing"
+        })
         requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
             "chat_id": chat_id,
             "text": (
@@ -268,6 +272,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 "reply_markup": build_date_nav_keyboard(date_str, "posted")
             })
         elif text == "stats":
+            requests.post(f"{TELEGRAM_API_URL}/sendChatAction", json={
+                "chat_id": chat_id,
+                "action": "typing"
+            })
             stats = get_stats()
             msg = (
                 f"<b>📊 Analytics</b>\n"
@@ -282,6 +290,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 "parse_mode": "HTML"
             })
         elif text == "list_unposted":
+            requests.post(f"{TELEGRAM_API_URL}/sendChatAction", json={
+                "chat_id": chat_id,
+                "action": "typing"
+            })
             from app.database import get_unposted_opportunities
             unposted = get_unposted_opportunities()
             if not unposted:
@@ -297,6 +309,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 "disable_web_page_preview": True
             })
         elif text == "list_posted":
+            requests.post(f"{TELEGRAM_API_URL}/sendChatAction", json={
+                "chat_id": chat_id,
+                "action": "typing"
+            })
             from app.database import get_all_opportunities
             from collections import defaultdict
             posted = [op for op in get_all_opportunities() if op.get("posted_to_telegram")]
@@ -320,13 +336,49 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 "disable_web_page_preview": True
             })
         elif text == "scrape_today":
-            # You can implement scraping logic here or trigger a background task
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            today = datetime.utcnow().strftime("%Y-%m-%d")
+            # Send a chat action (animation) and a single message to be updated
+            requests.post(f"{TELEGRAM_API_URL}/sendChatAction", json={
                 "chat_id": chat_id,
-                "text": "Scraping today's opportunities... (feature to be implemented)",
+                "action": "typing"
+            })
+            # Send initial message and get message_id
+            resp = requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                "chat_id": chat_id,
+                "text": "⏳ Scraping today's opportunities... Please wait.",
                 "parse_mode": "HTML"
             })
+            try:
+                message_id = resp.json().get("result", {}).get("message_id")
+            except Exception:
+                message_id = None
+            def scrape_and_post():
+                try:
+                    # Optionally update progress here if you want (not implemented for simplicity)
+                    new_ops = fetch_opportunities_by_date(today)
+                    posted_count = post_new_opportunities(today)
+                    msg = f"✅ Scraping and posting complete!\nNew opportunities scraped: <b>{len(new_ops)}</b>\nOpportunities posted to Telegram: <b>{posted_count}</b>"
+                except Exception as e:
+                    msg = f"❌ Error during scraping: {e}"
+                if message_id:
+                    requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "text": msg,
+                        "parse_mode": "HTML"
+                    })
+                else:
+                    requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                        "chat_id": chat_id,
+                        "text": msg,
+                        "parse_mode": "HTML"
+                    })
+            background_tasks.add_task(scrape_and_post)
         elif text == "goto_date_menu":
+            requests.post(f"{TELEGRAM_API_URL}/sendChatAction", json={
+                "chat_id": chat_id,
+                "action": "typing"
+            })
             today = datetime.utcnow().strftime("%Y-%m-%d")
             keyboard = {
                 "inline_keyboard": [
@@ -346,6 +398,10 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 "parse_mode": "HTML"
             })
         elif text == "about":
+            requests.post(f"{TELEGRAM_API_URL}/sendChatAction", json={
+                "chat_id": chat_id,
+                "action": "typing"
+            })
             msg = (
                 "<b>About Opportunity Scraper Bot</b>\n\n"
                 "This bot scrapes, stores, and shares the latest opportunities (scholarships, grants, fellowships, etc.) from the web.\n"
