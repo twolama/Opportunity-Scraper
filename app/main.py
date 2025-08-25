@@ -284,10 +284,12 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 f"Posted: <b>{stats['posted']}</b>\n"
                 f"Last Posted: <b>{stats['last_posted']}</b>\n"
             )
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
                 "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
                 "text": msg,
-                "parse_mode": "HTML"
+                "parse_mode": "HTML",
+                "reply_markup": build_main_menu()
             })
         elif text == "list_unposted":
             requests.post(f"{TELEGRAM_API_URL}/sendChatAction", json={
@@ -302,11 +304,13 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 msg = "<b>🟡 Unposted Opportunities (latest 10):</b>\n\n" + "\n\n".join([
                     f"<b>{op['title']}</b>\n<a href='{op['link']}'>Apply / Details</a>\nDeadline: {op.get('deadline', 'N/A')}" for op in unposted[:10]
                 ])
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
                 "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
                 "text": msg,
                 "parse_mode": "HTML",
-                "disable_web_page_preview": True
+                "disable_web_page_preview": True,
+                "reply_markup": build_main_menu()
             })
         elif text == "list_posted":
             requests.post(f"{TELEGRAM_API_URL}/sendChatAction", json={
@@ -329,11 +333,13 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                     for op in grouped[date][:5]:
                         msg += f"- <b>{op['title']}</b> (<a href='{op['link']}'>Details</a>)\n"
                 msg += "\n<i>Showing up to 5 per day, latest 3 days.</i>"
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
                 "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
                 "text": msg,
                 "parse_mode": "HTML",
-                "disable_web_page_preview": True
+                "disable_web_page_preview": True,
+                "reply_markup": build_main_menu()
             })
         elif text == "scrape_today":
             today = datetime.utcnow().strftime("%Y-%m-%d")
@@ -391,8 +397,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                     ]
                 ]
             }
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
                 "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
                 "text": "Choose which opportunities to view by date:",
                 "reply_markup": keyboard,
                 "parse_mode": "HTML"
@@ -408,10 +415,12 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 "You can control scraping, view analytics, and browse opportunities right here!\n\n"
                 "<i>Made with ❤️ by @twolamaa</i>"
             )
-            requests.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            requests.post(f"{TELEGRAM_API_URL}/editMessageText", json={
                 "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
                 "text": msg,
-                "parse_mode": "HTML"
+                "parse_mode": "HTML",
+                "reply_markup": build_main_menu()
             })
         else:
             # Log and answer any unhandled callback data
