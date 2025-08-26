@@ -116,5 +116,4 @@ MIT License. See `LICENSE` file for details.
 
 ## Acknowledgments
 
-- [Opportunity Desk](https://opportunitydesk.org) for data
 - [FastAPI](https://fastapi.tiangolo.com/), [SQLAlchemy](https://www.sqlalchemy.org/), [BeautifulSoup](https://www.crummy.com/software/BeautifulSoup/), [python-telegram-bot](https://python-telegram-bot.org/)
