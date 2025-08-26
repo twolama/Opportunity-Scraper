@@ -6,7 +6,7 @@ A robust, automated solution for scraping, storing, and sharing the latest oppor
 
 ## Features
 
-- **Automated Web Scraping:** Gathers opportunities from [opportunitydesk.org](https://opportunitydesk.org) and other sources.
+- **Automated Web Scraping:** Gathers opportunities and other sources.
 - **Database Storage:** Saves opportunities in a PostgreSQL database, avoiding duplicates.
 - **Telegram Integration:** Automatically posts new opportunities to a Telegram channel.
 - **REST API:** FastAPI-powered endpoints to access and manage opportunities.
