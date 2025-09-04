@@ -12,7 +12,12 @@ load_dotenv()  # loads env vars from .env file
 DATABASE_URL = getenv("DATABASE_URL")
 
 # Create engine & session factory
-engine = create_engine(DATABASE_URL, echo=False, future=True)
+engine = create_engine(
+    DATABASE_URL, 
+    echo=False, 
+    future=True, 
+    connect_args={"keepalives_idle": 60}
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
