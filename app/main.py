@@ -172,7 +172,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
             "text": (
                 "<b>Welcome to Opportunity Scraper Bot!</b>\n\n"
                 "Use the menu below to control the bot, get analytics, and view opportunities.\n\n"
-                "<i>Created by @ScholarshipSpot</i>"
+                "<i>Created by 👉 Mecha Temesgen.</i>"
             ),
             "reply_markup": build_main_menu(),
             "parse_mode": "HTML"
