@@ -1,5 +1,6 @@
 import os
 import requests
+from typing import Optional
 from dotenv import load_dotenv
 
 from app.database import update_posted_status, get_unposted_opportunities
@@ -13,7 +14,7 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 
 def post_to_telegram(opportunity: dict) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
-        print("❌ Missing Telegram credentials in environment variables.")
+        print("[ERR] Missing Telegram credentials in environment variables.")
         return False
 
     message = format_telegram_message(opportunity)
@@ -56,19 +57,19 @@ def post_to_telegram(opportunity: dict) -> bool:
             response = requests.post(url, json=payload)
 
         if response.ok:
-            print(f"✅ Posted to Telegram: {opportunity['title']}")
+            print(f"[OK] Posted to Telegram: {opportunity['title']}")
             update_posted_status(opportunity["id"])
             return True
         else:
-            print(f"❌ Telegram API Error: {response.status_code} - {response.text}")
+            print(f"[ERR] Telegram API Error: {response.status_code} - {response.text}")
             return False
 
     except Exception as e:
-        print(f"❌ Exception while posting to Telegram: {e}")
+        print(f"[ERR] Exception while posting to Telegram: {e}")
         return False
 
 
-def post_new_opportunities():
+def post_new_opportunities(date_str: Optional[str] = None):
     """Fetch unposted opportunities from DB and post them to Telegram."""
     opportunities = get_unposted_opportunities()
     if not opportunities:

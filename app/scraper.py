@@ -34,7 +34,7 @@ def safe_get(session, url, max_retries=5):
             response.raise_for_status()
             return response
         except requests.exceptions.RequestException as e:
-            print(f"⚠️ Attempt {i + 1} failed for {url}: {e}")
+            print(f"[WARN] Attempt {i + 1} failed for {url}: {e}")
             time.sleep((2 ** i) + random.uniform(2, 4))
     return None
 
@@ -111,22 +111,22 @@ def fetch_opportunities_by_date(target_date=None):
     all_opportunities = []
     session = requests.Session()
     url = f"{BASE_URL}/{target_date}/"
-    print(f"\n🔍 Fetching: {url}")
+    print(f"\n[Fetch] {url}")
 
     page_response = safe_get(session, url)
     if not page_response:
-        print(f"❌ Could not fetch {url}")
+        print(f"[ERR] Could not fetch {url}")
         return []
 
     soup = BeautifulSoup(page_response.text, "html.parser")
     articles = soup.select("article")
-    print(f"✅ Found {len(articles)} articles.")
+    print(f"[OK] Found {len(articles)} articles.")
 
     for idx, article in enumerate(articles, start=1):
         try:
             title_link = article.find("a", string=True, href=True)
             if not title_link:
-                print(f"⚠️ No title found in article #{idx}, skipping...")
+                print(f"[WARN] No title found in article #{idx}, skipping...")
                 continue
 
             title = title_link.get_text(strip=True)
@@ -135,7 +135,7 @@ def fetch_opportunities_by_date(target_date=None):
             link, deadline, thumbnail, description, tags = extract_detail_info(session, detail_url)
 
             if not link or link.startswith(BASE_URL):
-                print(f"⏩ Skipping '{title}' (no valid link)")
+                print(f"[Skip] '{title}' (no valid link)")
                 continue
 
             cleaned_deadline = clean_deadline(deadline)
@@ -149,18 +149,18 @@ def fetch_opportunities_by_date(target_date=None):
             }
 
             if opportunity_exists(title, link):
-                print(f"🟡 Already exists: {title}")
+                print(f"[Exists] Already exists: {title}")
                 continue
 
             saved = save_opportunity(opportunity)
             if saved:
-                print(f"✅ Saved: {title}")
+                print(f"[OK] Saved: {title}")
                 all_opportunities.append(opportunity)
             else:
-                print(f"❌ Failed to save: {title}")
+                print(f"[ERR] Failed to save: {title}")
 
         except Exception as e:
-            print(f"❌ Error parsing article #{idx}: {e}")
+            print(f"[ERR] Error parsing article #{idx}: {e}")
 
     return all_opportunities
 

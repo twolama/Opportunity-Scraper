@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from os import getenv
 from typing import List, Optional
-from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, DateTime, and_
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text, Boolean, DateTime, and_, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.exc import IntegrityError
 from dotenv import load_dotenv
@@ -35,9 +35,90 @@ class Opportunity(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     posted_to_telegram = Column(Boolean, default=False)
 
+class Admin(Base):
+    __tablename__ = "bot_admins"
+
+    user_id = Column(BigInteger, primary_key=True)
+    name = Column(String, default="")
+    added_by = Column(BigInteger, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 def init_db():
     """Create tables in DB if they don't exist"""
     Base.metadata.create_all(bind=engine)
+    # Ensure BOT_OWNER_ID is always an admin
+    owner_id = getenv("BOT_OWNER_ID")
+    if owner_id:
+        try:
+            db = SessionLocal()
+            owner = int(owner_id)
+            existing = db.query(Admin).filter(Admin.user_id == owner).first()
+            if not existing:
+                db.add(Admin(user_id=owner, name="Owner", added_by=owner))
+                db.commit()
+                print(f"[Admin] Owner {owner} registered as admin")
+        except Exception:
+            pass
+        finally:
+            db.close()
+    # Migration: add name column if missing
+    try:
+        db = SessionLocal()
+        db.execute(text("ALTER TABLE bot_admins ADD COLUMN name VARCHAR DEFAULT ''"))
+        db.commit()
+        print("[DB] Added name column to bot_admins")
+    except Exception:
+        pass
+    finally:
+        db.close()
+
+def is_admin(user_id: int) -> bool:
+    db = SessionLocal()
+    try:
+        return db.query(Admin).filter(Admin.user_id == user_id).first() is not None
+    finally:
+        db.close()
+
+def add_admin(user_id: int, added_by: int, name: str = "") -> bool:
+    db = SessionLocal()
+    try:
+        existing = db.query(Admin).filter(Admin.user_id == user_id).first()
+        if existing:
+            if name and existing.name != name:
+                existing.name = name
+                db.commit()
+            return False
+        db.add(Admin(user_id=user_id, added_by=added_by, name=name))
+        db.commit()
+        return True
+    except IntegrityError:
+        db.rollback()
+        return False
+    finally:
+        db.close()
+
+def remove_admin(user_id: int) -> bool:
+    db = SessionLocal()
+    try:
+        admin = db.query(Admin).filter(Admin.user_id == user_id).first()
+        if not admin:
+            return False
+        db.delete(admin)
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        return False
+    finally:
+        db.close()
+
+def get_admins() -> List[dict]:
+    db = SessionLocal()
+    try:
+        results = db.query(Admin).order_by(Admin.created_at).all()
+        return [{"user_id": a.user_id, "name": a.name, "added_by": a.added_by, "created_at": a.created_at} for a in results]
+    finally:
+        db.close()
 
 def opportunity_exists(title: str, link: str) -> bool:
     db = SessionLocal()
@@ -124,6 +205,6 @@ def delete_old_entries(days: Optional[int] = 30):
         cutoff_date = datetime.utcnow() - timedelta(days=days)
         deleted = db.query(Opportunity).filter(Opportunity.created_at < cutoff_date).delete()
         db.commit()
-        print(f"\U0001f9f9 Deleted {deleted} old opportunities (older than {days} days).")
+        print(f"[Clean] Deleted {deleted} old opportunities (older than {days} days).")
     finally:
         db.close()
