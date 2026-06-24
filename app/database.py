@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from os import getenv
 from typing import List, Optional
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text, Boolean, DateTime, and_, text
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text, Boolean, DateTime, and_, text, func, Index
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.exc import IntegrityError
 from dotenv import load_dotenv
@@ -35,6 +35,11 @@ class Opportunity(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     posted_to_telegram = Column(Boolean, default=False)
 
+    __table_args__ = (
+        Index("idx_posted_to_telegram", "posted_to_telegram"),
+        Index("idx_created_at", "created_at"),
+    )
+
 class Admin(Base):
     __tablename__ = "bot_admins"
 
@@ -67,6 +72,17 @@ def init_db():
         db.execute(text("ALTER TABLE bot_admins ADD COLUMN name VARCHAR DEFAULT ''"))
         db.commit()
         print("[DB] Added name column to bot_admins")
+    except Exception:
+        pass
+    finally:
+        db.close()
+    # Migration: add indexes if missing
+    try:
+        db = SessionLocal()
+        db.execute(text("CREATE INDEX IF NOT EXISTS idx_posted_to_telegram ON opportunities (posted_to_telegram)"))
+        db.execute(text("CREATE INDEX IF NOT EXISTS idx_created_at ON opportunities (created_at)"))
+        db.commit()
+        print("[DB] Indexes created")
     except Exception:
         pass
     finally:
@@ -130,15 +146,23 @@ def opportunity_exists(title: str, link: str) -> bool:
         db.close()
     return exists
 
-def save_opportunity(opportunity: dict) -> bool:
+def save_opportunity(opportunity: dict, scraped_date: Optional[str] = None) -> bool:
     db = SessionLocal()
+    if scraped_date:
+        try:
+            dt = datetime.strptime(scraped_date.replace("/", "-"), "%Y-%m-%d")
+        except ValueError:
+            dt = datetime.utcnow()
+    else:
+        dt = datetime.utcnow()
     opp = Opportunity(
         title=opportunity['title'],
         link=opportunity['link'],
         description=opportunity.get('description', ''),
         deadline=opportunity.get('deadline', ''),
         thumbnail=opportunity.get('thumbnail', ''),
-        tags=', '.join(opportunity.get('tags', []))
+        tags=', '.join(opportunity.get('tags', [])),
+        created_at=dt
     )
     try:
         db.add(opp)
@@ -196,6 +220,63 @@ def get_all_opportunities() -> List[dict]:
             }
             for opp in results
         ]
+    finally:
+        db.close()
+
+def _format_opportunity(opp):
+    return {
+        "id": opp.id,
+        "title": opp.title,
+        "link": opp.link,
+        "description": opp.description,
+        "deadline": opp.deadline,
+        "thumbnail": opp.thumbnail,
+        "tags": opp.tags.split(", ") if opp.tags else [],
+        "created_at": opp.created_at,
+        "posted_to_telegram": opp.posted_to_telegram,
+    }
+
+def get_unposted_by_date(date_str: str) -> List[dict]:
+    db = SessionLocal()
+    try:
+        results = db.query(Opportunity).filter(
+            Opportunity.posted_to_telegram == False,
+            func.date(Opportunity.created_at) == date_str
+        ).order_by(Opportunity.created_at.desc()).all()
+        return [_format_opportunity(o) for o in results]
+    finally:
+        db.close()
+
+def get_posted_by_date(date_str: str) -> List[dict]:
+    db = SessionLocal()
+    try:
+        results = db.query(Opportunity).filter(
+            Opportunity.posted_to_telegram == True,
+            func.date(Opportunity.created_at) == date_str
+        ).order_by(Opportunity.created_at.desc()).all()
+        return [_format_opportunity(o) for o in results]
+    finally:
+        db.close()
+
+def get_stats_from_db() -> dict:
+    db = SessionLocal()
+    try:
+        total = db.query(func.count(Opportunity.id)).scalar() or 0
+        unposted = db.query(func.count(Opportunity.id)).filter(
+            Opportunity.posted_to_telegram == False
+        ).scalar() or 0
+        posted = db.query(func.count(Opportunity.id)).filter(
+            Opportunity.posted_to_telegram == True
+        ).scalar() or 0
+        last = db.query(func.max(Opportunity.created_at)).filter(
+            Opportunity.posted_to_telegram == True
+        ).scalar()
+        return {
+            "total": total,
+            "unposted": unposted,
+            "posted": posted,
+            "last_posted": last if last else "N/A"
+        }
     finally:
         db.close()
 

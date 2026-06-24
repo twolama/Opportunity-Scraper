@@ -11,6 +11,8 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 
+_http = requests.Session()
+
 
 def post_to_telegram(opportunity: dict) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
@@ -43,7 +45,7 @@ def post_to_telegram(opportunity: dict) -> bool:
                 "disable_web_page_preview": False,
                 "reply_markup": reply_markup
             }
-            response = requests.post(url, json=payload)  # use json for buttons to work
+            response = _http.post(url, json=payload)  # use json for buttons to work
         else:
             # Send plain message with inline button
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -54,7 +56,7 @@ def post_to_telegram(opportunity: dict) -> bool:
                 "disable_web_page_preview": False,
                 "reply_markup": reply_markup
             }
-            response = requests.post(url, json=payload)
+            response = _http.post(url, json=payload)
 
         if response.ok:
             print(f"[OK] Posted to Telegram: {opportunity['title']}")

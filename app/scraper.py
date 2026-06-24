@@ -85,7 +85,7 @@ def extract_detail_info(session, detail_url):
     if not more_info_link:
         more_info_link = detail_url
 
-    time.sleep(random.uniform(3, 6))
+    time.sleep(random.uniform(1, 2))
     return more_info_link, deadline, thumbnail_url, description, tags
 
 def clean_deadline(deadline_str):
@@ -152,7 +152,7 @@ def fetch_opportunities_by_date(target_date=None):
                 print(f"[Exists] Already exists: {title}")
                 continue
 
-            saved = save_opportunity(opportunity)
+            saved = save_opportunity(opportunity, scraped_date=target_date)
             if saved:
                 print(f"[OK] Saved: {title}")
                 all_opportunities.append(opportunity)

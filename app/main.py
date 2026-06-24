@@ -18,6 +18,9 @@ from app.database import (
     init_db,
     get_all_opportunities,
     get_unposted_opportunities,
+    get_unposted_by_date,
+    get_posted_by_date,
+    get_stats_from_db,
     SessionLocal,
     Opportunity,
     is_admin,
@@ -83,7 +86,7 @@ _admin_names: dict[int, str] = {}
 _last_admin_refresh: float = 0
 _ADMIN_CACHE_TTL = 60
 _pending_admins: dict[int, str] = {}  # user_id -> first_name
-_invite_tokens: dict[str, int] = {}    # token -> owner_id (who generated it)
+_invite_tokens: dict[str, tuple[int, float]] = {}    # token -> (owner_id, created_at)
 
 def _refresh_admin_cache():
     global _admin_ids, _admin_names, _last_admin_refresh
@@ -101,21 +104,7 @@ def _is_authorized(user_id: int) -> bool:
     return user_id in _admin_ids
 
 def get_stats():
-    from app.database import get_all_opportunities, get_unposted_opportunities
-    all_ops = get_all_opportunities()
-    unposted = get_unposted_opportunities()
-    posted = [op for op in all_ops if op.get("posted_to_telegram")]
-    if posted:
-        last_posted = max(posted, key=lambda x: x.get("created_at"))
-        last_posted_time = last_posted.get("created_at")
-    else:
-        last_posted_time = "N/A"
-    return {
-        "total": len(all_ops),
-        "unposted": len(unposted),
-        "posted": len(posted),
-        "last_posted": last_posted_time
-    }
+    return get_stats_from_db()
 
 def build_main_menu(user_id=None):
     is_owner = user_id and BOT_OWNER_ID and user_id == BOT_OWNER_ID
@@ -251,16 +240,22 @@ def process_telegram_update(data, run_in_background=None):
             token = parts[1].strip() if len(parts) > 1 else ""
             if token and token.startswith("invite_"):
                 code = token.replace("invite_", "")
-                owner_id = _invite_tokens.pop(code, None)
-                if owner_id and add_admin(user_id, owner_id, message["from"].get("first_name", "")):
-                    _admin_ids.add(user_id)
-                    _admin_names[user_id] = message["from"].get("first_name", "")
-                    _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
-                        "chat_id": chat_id,
-                        "text": "🎉 You've been added as an admin! Use the menu below to control the bot.",
-                        "reply_markup": build_main_menu(user_id),
-                        "parse_mode": "HTML"
-                    })
+                entry = _invite_tokens.pop(code, None)
+                if entry is None:
+                    reply = "<b>Invalid or expired invite link.</b>"
+                else:
+                    owner_id, created_at = entry
+                    if time.time() - created_at > 86400:  # 24h TTL
+                        reply = "<b>This invite link has expired (24h TTL).</b>"
+                    elif add_admin(user_id, owner_id, message["from"].get("first_name", "")):
+                        _admin_ids.add(user_id)
+                        _admin_names[user_id] = message["from"].get("first_name", "")
+                        _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                            "chat_id": chat_id,
+                            "text": "🎉 You've been added as an admin! Use the menu below to control the bot.",
+                            "reply_markup": build_main_menu(user_id),
+                            "parse_mode": "HTML"
+                        })
                     return {"ok": True}
             _http.post(f"{TELEGRAM_API_URL}/sendChatAction", json={
                 "chat_id": chat_id,
@@ -513,7 +508,7 @@ def process_telegram_update(data, run_in_background=None):
                 except Exception:
                     BOT_USERNAME = ""
             token = secrets.token_hex(8)
-            _invite_tokens[token] = user_id
+            _invite_tokens[token] = (user_id, time.time())
             link = f"https://t.me/{BOT_USERNAME}?start=invite_{token}" if BOT_USERNAME else f"Invite code: <code>invite_{token}</code>"
             safe_edit_message_text({
                 "chat_id": chat_id,
@@ -675,22 +670,16 @@ def process_telegram_update(data, run_in_background=None):
             })
         elif text.startswith("posted_date_"):
             date_str = text.replace("posted_date_", "")
-            from app.database import get_all_opportunities
-            posted = [op for op in get_all_opportunities() if op.get("posted_to_telegram")]
-            from collections import defaultdict
-            grouped = defaultdict(list)
-            for op in posted:
-                op_date = str(op.get("created_at", "N/A"))[:10]
-                grouped[op_date].append(op)
-            ops = grouped.get(date_str, [])
+            ops = get_posted_by_date(date_str)
             if not ops:
                 msg = f"<b>No posted opportunities for {date_str}.</b>"
             else:
                 msg = f"<b>🟢 Posted Opportunities for {date_str}:</b>\n\n" + "\n\n".join([
                     f"<b>{op['title']}</b>\n<a href='{op['link']}'>Details</a>\nDeadline: {op.get('deadline', 'N/A')}" for op in ops[:10]
                 ])
-            _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            safe_edit_message_text({
                 "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
                 "text": msg,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True,
@@ -698,20 +687,8 @@ def process_telegram_update(data, run_in_background=None):
             })
         elif text.startswith("unposted_date_"):
             date_str = text.replace("unposted_date_", "")
-            from app.database import get_all_opportunities
-            all_ops = get_all_opportunities()
-            posted = [op for op in all_ops if op.get("posted_to_telegram")]
-            unposted = [op for op in all_ops if not op.get("posted_to_telegram")]
-            from collections import defaultdict
-            posted_grouped = defaultdict(list)
-            unposted_grouped = defaultdict(list)
-            for op in posted:
-                posted_grouped[str(op.get("created_at", "N/A"))[:10]].append(op)
-            for op in unposted:
-                unposted_grouped[str(op.get("created_at", "N/A"))[:10]].append(op)
-
-            today_unposted = unposted_grouped.get(date_str, [])
-            today_posted = posted_grouped.get(date_str, [])
+            today_unposted = get_unposted_by_date(date_str)
+            today_posted = get_posted_by_date(date_str)
 
             if today_unposted:
                 msg = f"<b>🟡 Unposted for {date_str}:</b>\n\n" + "\n\n".join([
@@ -742,8 +719,9 @@ def process_telegram_update(data, run_in_background=None):
                         ]
                     ]
                 }
-            _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            safe_edit_message_text({
                 "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
                 "text": msg,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True,
@@ -810,9 +788,8 @@ def process_telegram_update(data, run_in_background=None):
                 Thread(target=_scrape_date_only, daemon=True).start()
         elif text.startswith("post_date_"):
             date_str = text.replace("post_date_", "")
-            from app.database import get_all_opportunities
             from app.telegram_bot import post_to_telegram
-            date_ops = [op for op in get_all_opportunities() if not op.get("posted_to_telegram") and str(op.get("created_at", "N/A"))[:10] == date_str]
+            date_ops = get_unposted_by_date(date_str)
             if not date_ops:
                 _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
                     "chat_id": chat_id, "text": f"No unposted opportunities for {date_str}.", "parse_mode": "HTML"
@@ -1030,6 +1007,11 @@ def start_polling():
             )
             if resp.ok:
                 backoff = 1
+                # Cleanup expired invite tokens
+                now = time.time()
+                expired = [k for k, (_, t) in _invite_tokens.items() if now - t > 86400]
+                for k in expired:
+                    del _invite_tokens[k]
                 for update in resp.json().get("result", []):
                     process_telegram_update(update)
                     offset = update["update_id"] + 1
