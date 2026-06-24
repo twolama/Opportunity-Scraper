@@ -26,12 +26,13 @@ def post_to_telegram(opportunity: dict) -> bool:
     message = format_telegram_message(opportunity)
 
     # Prepare inline button
+    link = re.sub(r'[\u2000-\u200F\u2028-\u202F\u205F-\u206F\uFEFF]', '', opportunity.get("link", "https://fallback-link.com")).strip()
     reply_markup = {
         "inline_keyboard": [
             [
                 {
                     "text": "Apply Now",
-                    "url": opportunity.get("link", "https://fallback-link.com")
+                    "url": link if link else "https://fallback-link.com"
                 }
             ]
         ]

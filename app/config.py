@@ -13,3 +13,4 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 PUBLIC_URL = os.getenv("PUBLIC_URL")
 USE_POLLING = os.getenv("USE_POLLING", "true").lower() == "true"
 RUN_SCHEDULER = os.getenv("RUN_SCHEDULER", "true").lower() == "true"
+API_KEY = os.getenv("API_KEY", "")

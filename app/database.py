@@ -27,7 +27,7 @@ class Opportunity(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=False)
-    link = Column(String, nullable=False)
+    link = Column(String, nullable=False, unique=True)
     description = Column(Text)
     deadline = Column(String)
     thumbnail = Column(String)
@@ -87,6 +87,16 @@ def init_db():
         pass
     finally:
         db.close()
+    # Migration: unique constraint on link (ignore if already exists)
+    try:
+        db = SessionLocal()
+        db.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_link ON opportunities (link)"))
+        db.commit()
+        print("[DB] Unique index on link created")
+    except Exception:
+        pass
+    finally:
+        db.close()
 
 def is_admin(user_id: int) -> bool:
     db = SessionLocal()
@@ -139,12 +149,9 @@ def get_admins() -> List[dict]:
 def opportunity_exists(title: str, link: str) -> bool:
     db = SessionLocal()
     try:
-        exists = db.query(Opportunity).filter(
-            and_(Opportunity.title == title, Opportunity.link == link)
-        ).first() is not None
+        return db.query(Opportunity).filter_by(link=link).first() is not None
     finally:
         db.close()
-    return exists
 
 def save_opportunity(opportunity: dict, scraped_date: Optional[str] = None) -> bool:
     db = SessionLocal()
@@ -179,6 +186,66 @@ def update_posted_status(opportunity_id: int):
     try:
         db.query(Opportunity).filter_by(id=opportunity_id).update({"posted_to_telegram": True})
         db.commit()
+    finally:
+        db.close()
+
+def get_opportunity_by_id(opportunity_id: int) -> Optional[dict]:
+    db = SessionLocal()
+    try:
+        opp = db.query(Opportunity).filter_by(id=opportunity_id).first()
+        if opp:
+            return {
+                "id": opp.id,
+                "title": opp.title,
+                "link": opp.link,
+                "description": opp.description,
+                "deadline": opp.deadline,
+                "thumbnail": opp.thumbnail,
+                "tags": opp.tags.split(", ") if opp.tags else [],
+                "created_at": opp.created_at,
+                "posted_to_telegram": opp.posted_to_telegram,
+            }
+        return None
+    finally:
+        db.close()
+
+def update_opportunity(opportunity_id: int, data: dict) -> bool:
+    db = SessionLocal()
+    try:
+        opp = db.query(Opportunity).filter_by(id=opportunity_id).first()
+        if not opp:
+            return False
+        for key, val in data.items():
+            if hasattr(opp, key) and val is not None:
+                if key == "tags" and isinstance(val, list):
+                    setattr(opp, key, ", ".join(val))
+                elif key == "created_at" and isinstance(val, str):
+                    try:
+                        setattr(opp, key, datetime.strptime(val, "%Y-%m-%d"))
+                    except ValueError:
+                        pass
+                else:
+                    setattr(opp, key, val)
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        return False
+    finally:
+        db.close()
+
+def delete_opportunity(opportunity_id: int) -> bool:
+    db = SessionLocal()
+    try:
+        opp = db.query(Opportunity).filter_by(id=opportunity_id).first()
+        if not opp:
+            return False
+        db.delete(opp)
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        return False
     finally:
         db.close()
 
@@ -341,8 +408,8 @@ def search_opportunities(keyword: str, skip: int = 0, limit: int = 10, posted: O
         db.close()
 
 def bulk_save_opportunities(opportunities: list[dict], scraped_date: Optional[str] = None) -> int:
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
     db = SessionLocal()
-    saved_count = 0
     try:
         if scraped_date:
             try:
@@ -351,26 +418,24 @@ def bulk_save_opportunities(opportunities: list[dict], scraped_date: Optional[st
                 dt = datetime.utcnow()
         else:
             dt = datetime.utcnow()
-        opps = []
+        rows = []
         for opp in opportunities:
-            try:
-                obj = Opportunity(
-                    title=opp['title'],
-                    link=opp['link'],
-                    description=opp.get('description', ''),
-                    deadline=opp.get('deadline', ''),
-                    thumbnail=opp.get('thumbnail', ''),
-                    tags=', '.join(opp.get('tags', [])),
-                    created_at=dt
-                )
-                opps.append(obj)
-                saved_count += 1
-            except Exception:
-                pass
-        if opps:
-            db.add_all(opps)
+            rows.append({
+                "title": opp['title'],
+                "link": opp['link'],
+                "description": opp.get('description', ''),
+                "deadline": opp.get('deadline', ''),
+                "thumbnail": opp.get('thumbnail', ''),
+                "tags": ', '.join(opp.get('tags', [])),
+                "created_at": dt,
+            })
+        if rows:
+            stmt = pg_insert(Opportunity).values(rows)
+            stmt = stmt.on_conflict_do_nothing(index_elements=["link"])
+            result = db.execute(stmt)
             db.commit()
-        return saved_count
+            return result.rowcount
+        return 0
     except Exception:
         db.rollback()
         return 0

@@ -6,12 +6,12 @@ def build_main_menu(user_id=None):
     is_owner = user_id and BOT_OWNER_ID and user_id == BOT_OWNER_ID
     keyboard = [
         [
-            {"text": "🔄 Scrape Today", "callback_data": "scrape_today"},
+            {"text": "🔄 Scrape Now", "callback_data": "scrape_today"},
             {"text": "📊 Analytics", "callback_data": "stats"}
         ],
         [
-            {"text": "🟡 Unposted", "callback_data": "list_unposted"},
-            {"text": "🟢 Posted", "callback_data": "list_posted"}
+            {"text": "🟡 Unposted", "callback_data": "browse_unposted_0"},
+            {"text": "🟢 Posted", "callback_data": "browse_posted_0"}
         ],
         [
             {"text": "📅 Go to Date", "callback_data": "goto_date_menu"}

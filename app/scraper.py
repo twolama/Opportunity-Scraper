@@ -8,6 +8,9 @@ import sys
 
 from app.database import opportunity_exists, bulk_save_opportunities
 
+def clean_url(url):
+    return re.sub(r'[\u2000-\u200F\u2028-\u202F\u205F-\u206F\uFEFF]', '', url).strip()
+
 BASE_URL = "https://opportunitydesk.org"
 
 USER_AGENTS = [
@@ -134,6 +137,7 @@ def fetch_opportunities_by_date(target_date=None):
             detail_url = title_link['href']
 
             link, deadline, thumbnail, description, tags = extract_detail_info(session, detail_url)
+            link = clean_url(link)
 
             if not link or link.startswith(BASE_URL):
                 print(f"[Skip] '{title}' (no valid link)")
