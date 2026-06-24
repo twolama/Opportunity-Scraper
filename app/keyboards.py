@@ -106,6 +106,8 @@ def build_browse_keyboard(page, total, total_count, mode):
         row.append({"text": "Next ➡️", "callback_data": f"browse_{mode}_{page + 1}"})
     if row:
         keyboard.append(row)
+    if mode == "unposted" and total_count:
+        keyboard.append([{"text": f"📤 Post All ({total_count})", "callback_data": "post_all_unposted"}])
     keyboard.append([{"text": "📊 Back to Stats", "callback_data": "stats"}])
     keyboard.append([{"text": "🔙 Main Menu", "callback_data": "main_menu"}])
     return {"inline_keyboard": keyboard}
