@@ -6,7 +6,7 @@ def build_main_menu(user_id=None):
     is_owner = user_id and BOT_OWNER_ID and user_id == BOT_OWNER_ID
     keyboard = [
         [
-            {"text": "🔄 Scrape Now", "callback_data": "scrape_today"},
+            {"text": "🔄 Search Now", "callback_data": "scrape_today"},
             {"text": "📊 Analytics", "callback_data": "stats"}
         ],
         [
@@ -49,8 +49,11 @@ def build_date_nav_keyboard(date_str, mode):
 
 def build_year_picker(mode):
     this_year = datetime.utcnow().year
-    years = [this_year - i for i in range(5)]
-    keyboard = [[{"text": str(y), "callback_data": f"{mode}_pick_month_{y}"}] for y in years]
+    years = [this_year - i for i in range(10)]
+    keyboard = []
+    for i in range(0, len(years), 3):
+        row = [{"text": str(y), "callback_data": f"{mode}_pick_month_{y}"} for y in years[i:i+3]]
+        keyboard.append(row)
     keyboard.append([{"text": "🔙 Back", "callback_data": f"{mode}_date_{datetime.utcnow().strftime('%Y-%m-%d')}"}])
     return {"inline_keyboard": keyboard}
 

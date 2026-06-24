@@ -17,7 +17,9 @@ engine = create_engine(
     DATABASE_URL, 
     echo=False, 
     future=True, 
-    connect_args={"keepalives_idle": 60}
+    pool_pre_ping=True,
+    pool_recycle=300,
+    connect_args={"keepalives_idle": 60, "keepalives_interval": 10, "keepalives_count": 5}
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -53,24 +55,28 @@ class ScheduleTime(Base):
     __tablename__ = "schedule_times"
 
     id = Column(Integer, primary_key=True, index=True)
-    time_str = Column(String(5), unique=True, nullable=False)  # "HH:MM" in UTC
+    time_str = Column(String(5), nullable=False)  # "HH:MM" in UTC
+    schedule_type = Column(String(10), nullable=False, default="scrape")  # "scrape" or "post"
     created_at = Column(DateTime, default=datetime.utcnow)
 
-def get_schedule_times() -> list[str]:
+def get_schedule_times(schedule_type: str = "scrape") -> list[str]:
     db = SessionLocal()
     try:
-        rows = db.query(ScheduleTime).order_by(ScheduleTime.time_str).all()
+        rows = db.query(ScheduleTime).filter(ScheduleTime.schedule_type == schedule_type).order_by(ScheduleTime.time_str).all()
         return [r.time_str for r in rows]
     finally:
         db.close()
 
-def add_schedule_time(time_str: str) -> bool:
+def add_schedule_time(time_str: str, schedule_type: str = "scrape") -> bool:
     db = SessionLocal()
     try:
-        existing = db.query(ScheduleTime).filter(ScheduleTime.time_str == time_str).first()
+        existing = db.query(ScheduleTime).filter(
+            ScheduleTime.time_str == time_str,
+            ScheduleTime.schedule_type == schedule_type
+        ).first()
         if existing:
             return False
-        db.add(ScheduleTime(time_str=time_str))
+        db.add(ScheduleTime(time_str=time_str, schedule_type=schedule_type))
         db.commit()
         return True
     except IntegrityError:
@@ -79,10 +85,13 @@ def add_schedule_time(time_str: str) -> bool:
     finally:
         db.close()
 
-def remove_schedule_time(time_str: str) -> bool:
+def remove_schedule_time(time_str: str, schedule_type: str = "scrape") -> bool:
     db = SessionLocal()
     try:
-        row = db.query(ScheduleTime).filter(ScheduleTime.time_str == time_str).first()
+        row = db.query(ScheduleTime).filter(
+            ScheduleTime.time_str == time_str,
+            ScheduleTime.schedule_type == schedule_type
+        ).first()
         if not row:
             return False
         db.delete(row)
@@ -176,16 +185,32 @@ def init_db():
         pass
     finally:
         db.close()
+    # Migration: add schedule_type column + unique index
+    try:
+        db = SessionLocal()
+        db.execute(text("ALTER TABLE schedule_times ADD COLUMN IF NOT EXISTS schedule_type VARCHAR(10) DEFAULT 'scrape'"))
+        db.execute(text("UPDATE schedule_times SET schedule_type = 'scrape' WHERE schedule_type IS NULL"))
+        db.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_schedule ON schedule_times (time_str, schedule_type)"))
+        db.commit()
+        print("[DB] Schedule type migration done")
+    except Exception:
+        pass
+    finally:
+        db.close()
     # Seed default schedule times if table is empty
     try:
         db = SessionLocal()
-        count = db.query(ScheduleTime).count()
-        if count == 0:
-            defaults = ["04:59", "10:59", "16:59"]
-            for t in defaults:
-                db.add(ScheduleTime(time_str=t))
-            db.commit()
-            print(f"[DB] Seeded {len(defaults)} default schedule times")
+        scrape_count = db.query(ScheduleTime).filter(ScheduleTime.schedule_type == "scrape").count()
+        post_count = db.query(ScheduleTime).filter(ScheduleTime.schedule_type == "post").count()
+        if scrape_count == 0:
+            for t in ["04:59", "10:59", "16:59"]:
+                db.add(ScheduleTime(time_str=t, schedule_type="scrape"))
+            print(f"[DB] Seeded default scrape times")
+        if post_count == 0:
+            for t in ["08:00", "14:00", "20:00"]:
+                db.add(ScheduleTime(time_str=t, schedule_type="post"))
+            print(f"[DB] Seeded default post times")
+        db.commit()
     except Exception:
         pass
     finally:
