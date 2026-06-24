@@ -261,6 +261,11 @@ def get_posted_by_date(date_str: str) -> List[dict]:
 def get_stats_from_db() -> dict:
     db = SessionLocal()
     try:
+        now = datetime.utcnow()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today_start - timedelta(days=today_start.weekday())
+        month_start = today_start.replace(day=1)
+
         total = db.query(func.count(Opportunity.id)).scalar() or 0
         unposted = db.query(func.count(Opportunity.id)).filter(
             Opportunity.posted_to_telegram == False
@@ -268,15 +273,107 @@ def get_stats_from_db() -> dict:
         posted = db.query(func.count(Opportunity.id)).filter(
             Opportunity.posted_to_telegram == True
         ).scalar() or 0
-        last = db.query(func.max(Opportunity.created_at)).filter(
+
+        today_count = db.query(func.count(Opportunity.id)).filter(
+            Opportunity.created_at >= today_start
+        ).scalar() or 0
+        week_count = db.query(func.count(Opportunity.id)).filter(
+            Opportunity.created_at >= week_start
+        ).scalar() or 0
+        month_count = db.query(func.count(Opportunity.id)).filter(
+            Opportunity.created_at >= month_start
+        ).scalar() or 0
+
+        last_posted = db.query(func.max(Opportunity.created_at)).filter(
             Opportunity.posted_to_telegram == True
         ).scalar()
+        oldest = db.query(func.min(Opportunity.created_at)).scalar()
+
+        # Top 10 tags by frequency
+        all_tags = db.query(Opportunity.tags).filter(
+            Opportunity.tags.isnot(None), Opportunity.tags != ""
+        ).all()
+        from collections import Counter
+        tag_counter: Counter = Counter()
+        for (tags_str,) in all_tags:
+            for tag in tags_str.split(", "):
+                tag = tag.strip()
+                if tag:
+                    tag_counter[tag] += 1
+        top_tags = tag_counter.most_common(10)
+
         return {
             "total": total,
             "unposted": unposted,
             "posted": posted,
-            "last_posted": last if last else "N/A"
+            "today": today_count,
+            "week": week_count,
+            "month": month_count,
+            "last_posted": last_posted.strftime("%Y-%m-%d %H:%M") if last_posted else "N/A",
+            "oldest": oldest.strftime("%Y-%m-%d") if oldest else "N/A",
+            "top_tags": top_tags,
         }
+    finally:
+        db.close()
+
+def search_opportunities(keyword: str, skip: int = 0, limit: int = 10, posted: Optional[bool] = None) -> dict:
+    db = SessionLocal()
+    try:
+        q = db.query(Opportunity)
+        if keyword:
+            like = f"%{keyword}%"
+            q = q.filter(
+                (Opportunity.title.ilike(like)) |
+                (Opportunity.description.ilike(like)) |
+                (Opportunity.tags.ilike(like))
+            )
+        if posted is not None:
+            q = q.filter(Opportunity.posted_to_telegram == posted)
+        total = q.count()
+        results = q.order_by(Opportunity.created_at.desc()).offset(skip).limit(limit).all()
+        return {
+            "results": [_format_opportunity(o) for o in results],
+            "total": total,
+            "offset": skip,
+            "limit": limit
+        }
+    finally:
+        db.close()
+
+def bulk_save_opportunities(opportunities: list[dict], scraped_date: Optional[str] = None) -> int:
+    db = SessionLocal()
+    saved_count = 0
+    try:
+        if scraped_date:
+            try:
+                dt = datetime.strptime(scraped_date.replace("/", "-"), "%Y-%m-%d")
+            except ValueError:
+                dt = datetime.utcnow()
+        else:
+            dt = datetime.utcnow()
+        opps = []
+        for opp in opportunities:
+            try:
+                obj = Opportunity(
+                    title=opp['title'],
+                    link=opp['link'],
+                    description=opp.get('description', ''),
+                    deadline=opp.get('deadline', ''),
+                    thumbnail=opp.get('thumbnail', ''),
+                    tags=', '.join(opp.get('tags', [])),
+                    created_at=dt
+                )
+                opps.append(obj)
+                saved_count += 1
+            except Exception:
+                pass
+        if opps:
+            db.add_all(opps)
+            db.commit()
+        return saved_count
+    except Exception:
+        db.rollback()
+        return 0
     finally:
         db.close()
 

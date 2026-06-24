@@ -1,9 +1,10 @@
 import os
+import re
 import secrets
 import asyncio
 import time
 import logging
-from fastapi import FastAPI, Request, BackgroundTasks
+from fastapi import FastAPI, Request, BackgroundTasks, Query
 from threading import Thread
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -21,6 +22,7 @@ from app.database import (
     get_unposted_by_date,
     get_posted_by_date,
     get_stats_from_db,
+    search_opportunities,
     SessionLocal,
     Opportunity,
     is_admin,
@@ -28,9 +30,14 @@ from app.database import (
     remove_admin,
     get_admins,
 )
+from app.config import TELEGRAM_API_URL, BOT_OWNER_ID, PUBLIC_URL, USE_POLLING, RUN_SCHEDULER
+from app.keyboards import build_main_menu, build_date_nav_keyboard, build_year_picker, build_month_picker, build_day_picker, build_search_keyboard, build_stats_keyboard, build_browse_keyboard
 
 # --- Reusable HTTP session (connection pool => way faster) ---
 _http = requests.Session()
+
+def _sanitize(msg: str) -> str:
+    return re.sub(r'bot\d+:[\w-]+', 'bot***REDACTED***', str(msg))
 
 # --- Pydantic Schemas ---
 
@@ -63,19 +70,18 @@ class RunOnceOut(BaseModel):
 class WebhookOut(BaseModel):
     ok: bool
 
+class SearchResultOut(BaseModel):
+    results: list[OpportunityOut]
+    total: int
+    offset: int
+    limit: int
+
 app = FastAPI(
     title="Opportunity Scraper API",
     description="Scrapes opportunities (scholarships, grants, fellowships) from opportunitydesk.org, stores them in PostgreSQL, and posts new ones to a Telegram channel.",
     version="1.0.0",
     contact={"name": "Mecha Temesgen", "url": "https://t.me/twolamaa"},
 )
-
-# --- Telegram Webhook Handler ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-
-BOT_OWNER_ID_str = os.getenv("BOT_OWNER_ID", "")
-BOT_OWNER_ID = int(BOT_OWNER_ID_str) if BOT_OWNER_ID_str.strip() else 0
 
 # Lazy-loaded bot username (from getMe)
 BOT_USERNAME: str | None = None
@@ -106,82 +112,6 @@ def _is_authorized(user_id: int) -> bool:
 def get_stats():
     return get_stats_from_db()
 
-def build_main_menu(user_id=None):
-    is_owner = user_id and BOT_OWNER_ID and user_id == BOT_OWNER_ID
-    keyboard = [
-        [
-            {"text": "🔄 Scrape Today", "callback_data": "scrape_today"},
-            {"text": "📊 Analytics", "callback_data": "stats"}
-        ],
-        [
-            {"text": "🟡 Unposted", "callback_data": "list_unposted"},
-            {"text": "🟢 Posted", "callback_data": "list_posted"}
-        ],
-        [
-            {"text": "📅 Go to Date", "callback_data": "goto_date_menu"}
-        ],
-        [
-            {"text": "ℹ️ About", "callback_data": "about"}
-        ]
-    ]
-    if is_owner:
-        keyboard.append([
-            {"text": "👥 Admins", "callback_data": "admin_menu"}
-        ])
-    return {"inline_keyboard": keyboard}
-
-def build_date_nav_keyboard(date_str, mode):
-    # mode: 'posted' or 'unposted'
-    date = datetime.strptime(date_str, "%Y-%m-%d")
-    prev_date = (date - timedelta(days=1)).strftime("%Y-%m-%d")
-    next_date = (date + timedelta(days=1)).strftime("%Y-%m-%d")
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "⬅️ Previous", "callback_data": f"{mode}_date_{prev_date}"},
-                {"text": f"{date_str}", "callback_data": "noop"},
-                {"text": "Next ➡️", "callback_data": f"{mode}_date_{next_date}"}
-            ],
-            [
-                {"text": "📅 Pick Date", "callback_data": f"{mode}_pick_year"}
-            ],
-            [
-                {"text": "🔙 Main Menu", "callback_data": "main_menu"}
-            ]
-        ]
-    }
-
-def build_year_picker(mode):
-    this_year = datetime.utcnow().year
-    years = [this_year - i for i in range(5)]
-    keyboard = [[{"text": str(y), "callback_data": f"{mode}_pick_month_{y}"}] for y in years]
-    keyboard.append([{"text": "🔙 Back", "callback_data": f"{mode}_date_{datetime.utcnow().strftime('%Y-%m-%d')}"}])
-    return {"inline_keyboard": keyboard}
-
-def build_month_picker(mode, year):
-    months = [
-        ("Jan", 1), ("Feb", 2), ("Mar", 3), ("Apr", 4), ("May", 5), ("Jun", 6),
-        ("Jul", 7), ("Aug", 8), ("Sep", 9), ("Oct", 10), ("Nov", 11), ("Dec", 12)
-    ]
-    keyboard = [[{"text": m[0], "callback_data": f"{mode}_pick_day_{year}-{m[1]:02d}"} for m in months[i:i+4]] for i in range(0, 12, 4)]
-    keyboard.append([{"text": "🔙 Back", "callback_data": f"{mode}_pick_year"}])
-    return {"inline_keyboard": keyboard}
-
-def build_day_picker(mode, year_month):
-    year, month = map(int, year_month.split("-"))
-    from calendar import monthrange
-    days = monthrange(year, month)[1]
-    keyboard = []
-    for i in range(1, days+1, 7):
-        row = []
-        for d in range(i, min(i+7, days+1)):
-            date_str = f"{year}-{month:02d}-{d:02d}"
-            row.append({"text": str(d), "callback_data": f"{mode}_date_{date_str}"})
-        keyboard.append(row)
-    keyboard.append([{"text": "🔙 Back", "callback_data": f"{mode}_pick_month_{year}"}])
-    return {"inline_keyboard": keyboard}
-
-
 def safe_edit_message_text(payload):
     resp = _http.post(f"{TELEGRAM_API_URL}/editMessageText", json=payload)
     try:
@@ -192,7 +122,7 @@ def safe_edit_message_text(payload):
         err = data.get("description", "")
         if "message is not modified" in err:
             return
-        logging.warning(f"editMessageText failed: {data}")
+        logging.warning(_sanitize(f"editMessageText failed: {data}"))
         payload2 = payload.copy()
         payload2.pop("message_id", None)
         _http.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload2)
@@ -272,12 +202,45 @@ def process_telegram_update(data, run_in_background=None):
                 "parse_mode": "HTML"
             })
             return {"ok": True}
+        if text and text.startswith("/search"):
+            keyword = text[len("/search "):].strip() if len(text) > len("/search ") else ""
+            if not keyword:
+                _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                    "chat_id": chat_id,
+                    "text": "Usage: /search &lt;keyword&gt;\n\nExample: /search scholarship",
+                    "parse_mode": "HTML"
+                })
+            else:
+                result = search_opportunities(keyword, 0, 10)
+                if result["total"] == 0:
+                    _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                        "chat_id": chat_id,
+                        "text": f"No results found for \"<b>{keyword}</b>\".",
+                        "parse_mode": "HTML"
+                    })
+                else:
+                    lines = [f"<b>Results for \"{keyword}\" ({result['total']} found):</b>\n"]
+                    for op in result["results"]:
+                        status = "🟢" if op["posted_to_telegram"] else "🟡"
+                        date_str = str(op.get("created_at", ""))[:10] if op.get("created_at") else "?"
+                        lines.append(f"{status} <b>{op['title']}</b>\n📅 {date_str} | <a href='{op['link']}'>Link</a>")
+                    msg = "\n\n".join(lines)
+                    kb = build_search_keyboard(0, result["total"], keyword) if result["total"] > 10 else {"inline_keyboard": [[{"text": "🔙 Main Menu", "callback_data": "main_menu"}]]}
+                    _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                        "chat_id": chat_id,
+                        "text": msg,
+                        "parse_mode": "HTML",
+                        "disable_web_page_preview": True,
+                        "reply_markup": kb
+                    })
+            return {"ok": True}
         if text and text.startswith("/help"):
             msg = (
                 "<b>Available commands:</b>\n\n"
                 "/start - Show the main menu\n"
                 "/myid - Show your Telegram user ID\n"
                 "/help - Show this message\n"
+                "/search &lt;keyword&gt; - Search opportunities by title, description, or tags\n"
                 "/request_admin - Request admin access from the owner\n\n"
                 "<i>Owner-only:</i>\n"
                 "/add_admin &lt;id&gt; - Add admin\n"
@@ -759,7 +722,7 @@ def process_telegram_update(data, run_in_background=None):
                                 [{"text": "🔙 Main Menu", "callback_data": "main_menu"}]
                             ]
                         }
-                        _http.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+                        safe_edit_message_text({
                             "chat_id": chat_id,
                             "message_id": msg_id,
                             "text": msg,
@@ -769,19 +732,22 @@ def process_telegram_update(data, run_in_background=None):
                         })
                     else:
                         txt = f"No new opportunities found for {date_str}."
-                        _http.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+                        safe_edit_message_text({
                             "chat_id": chat_id,
                             "message_id": msg_id,
                             "text": txt,
                             "parse_mode": "HTML"
                         })
                 except Exception as e:
-                    _http.post(f"{TELEGRAM_API_URL}/editMessageText", json={
-                        "chat_id": chat_id,
-                        "message_id": msg_id,
-                        "text": f"❌ Error: {e}",
-                        "parse_mode": "HTML"
-                    })
+                    try:
+                        safe_edit_message_text({
+                            "chat_id": chat_id,
+                            "message_id": msg_id,
+                            "text": f"❌ Error: {_sanitize(e)}",
+                            "parse_mode": "HTML"
+                        })
+                    except Exception:
+                        pass
             if run_in_background:
                 run_in_background(_scrape_date_only)
             else:
@@ -828,19 +794,30 @@ def process_telegram_update(data, run_in_background=None):
                 "action": "typing"
             })
             stats = get_stats()
+            tags_section = ""
+            if stats.get("top_tags"):
+                tags_list = [f"  {t[0]}: {t[1]}" for t in stats["top_tags"][:5]]
+                tags_section = "\n<b>Top Tags:</b>\n" + "\n".join(tags_list)
             msg = (
-                f"<b>📊 Analytics</b>\n"
+                f"<b>📊 Analytics</b>\n\n"
                 f"Total: <b>{stats['total']}</b>\n"
-                f"Unposted: <b>{stats['unposted']}</b>\n"
-                f"Posted: <b>{stats['posted']}</b>\n"
-                f"Last Posted: <b>{stats['last_posted']}</b>\n"
+                f"🟢 Posted: <b>{stats['posted']}</b>\n"
+                f"🟡 Unposted: <b>{stats['unposted']}</b>\n\n"
+                f"<b>Scraped:</b>\n"
+                f"  Today: <b>{stats['today']}</b>\n"
+                f"  This Week: <b>{stats['week']}</b>\n"
+                f"  This Month: <b>{stats['month']}</b>\n\n"
+                f"<b>Timeline:</b>\n"
+                f"  Oldest: <b>{stats['oldest']}</b>\n"
+                f"  Last Posted: <b>{stats['last_posted']}</b>"
+                f"{tags_section}"
             )
-            _http.post(f"{TELEGRAM_API_URL}/editMessageText", json={
+            safe_edit_message_text({
                 "chat_id": chat_id,
                 "message_id": callback_query["message"]["message_id"],
                 "text": msg,
                 "parse_mode": "HTML",
-                "reply_markup": build_main_menu(user_id)
+                "reply_markup": build_stats_keyboard(stats["total"], stats["unposted"], stats["posted"])
             })
         elif text == "list_unposted":
             _http.post(f"{TELEGRAM_API_URL}/sendChatAction", json={
@@ -960,6 +937,63 @@ def process_telegram_update(data, run_in_background=None):
                 "parse_mode": "HTML",
                 "reply_markup": build_main_menu(user_id)
             })
+        elif text.startswith("search_"):
+            try:
+                parts = text.split("_", 2)
+                keyword = parts[1]
+                offset = int(parts[2])
+            except (IndexError, ValueError):
+                keyword = ""
+                offset = 0
+            result = search_opportunities(keyword, offset, 10)
+            if not result["results"]:
+                msg = f"No more results for \"<b>{keyword}</b>\"."
+            else:
+                lines = [f"<b>Results for \"{keyword}\" ({result['total']} found):</b>\n"]
+                for op in result["results"]:
+                    status = "🟢" if op["posted_to_telegram"] else "🟡"
+                    date_str = str(op.get("created_at", ""))[:10] if op.get("created_at") else "?"
+                    lines.append(f"{status} <b>{op['title']}</b>\n📅 {date_str} | <a href='{op['link']}'>Link</a>")
+                msg = "\n\n".join(lines)
+            safe_edit_message_text({
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "text": msg,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+                "reply_markup": build_search_keyboard(offset, result["total"], keyword)
+            })
+        elif text.startswith("browse_"):
+            try:
+                parts = text.split("_", 2)
+                mode = parts[1]  # 'all', 'unposted', or 'posted'
+                page = int(parts[2])
+            except (IndexError, ValueError):
+                mode = "all"
+                page = 0
+            per_page = 10
+            posted_filter = {"all": None, "unposted": False, "posted": True}.get(mode)
+            result = search_opportunities("", page * per_page, per_page, posted_filter)
+            ops = result["results"]
+            if not ops:
+                msg = "<b>No opportunities found.</b>"
+            else:
+                status_map = {None: "", False: "🟡 ", True: "🟢 "}
+                prefix = status_map.get(posted_filter, "")
+                lines = [f"<b>{prefix}Page {page + 1}/{max(1, (result['total'] + per_page - 1) // per_page)} ({result['total']} total):</b>\n"]
+                for op in ops:
+                    s = "🟢" if op["posted_to_telegram"] else "🟡"
+                    date_str = str(op.get("created_at", ""))[:10] if op.get("created_at") else "?"
+                    lines.append(f"{s} <b>{op['title']}</b>\n📅 {date_str} | <a href='{op['link']}'>Link</a>")
+                msg = "\n\n".join(lines)
+            safe_edit_message_text({
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "text": msg,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+                "reply_markup": build_browse_keyboard(page, result["total"], result["total"], mode)
+            })
         else:
             logging.warning(f"Unhandled callback data: {text}")
             callback_id = callback_query.get("id")
@@ -991,7 +1025,7 @@ def set_webhook():
         if resp.ok:
             print(f"[OK] Webhook set to {webhook_url}")
         else:
-            print(f"[ERR] Failed to set webhook: {resp.text}")
+            print(f"[ERR] Failed to set webhook: {_sanitize(resp.text)}")
 
 def start_polling():
     offset = 0
@@ -1019,7 +1053,7 @@ def start_polling():
             backoff = 1
             pass
         except Exception as e:
-            logging.warning(f"Polling error: {e}")
+            logging.warning(_sanitize(f"Polling error: {e}"))
             time.sleep(backoff)
             backoff = min(backoff * 2, max_backoff)
 
@@ -1051,11 +1085,46 @@ async def ping():
 async def ping_head():
     return
 
-@app.get("/opportunities", tags=["Opportunities"], summary="List all opportunities", response_model=list[OpportunityOut])
-async def get_opportunities():
-    """Returns every opportunity in the database, newest first."""
+@app.get("/opportunities", tags=["Opportunities"], summary="List opportunities", response_model=SearchResultOut)
+async def get_opportunities(
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(20, ge=1, le=100, description="Max records to return"),
+    search: Optional[str] = Query(None, description="Search keyword in title/description/tags"),
+    posted: Optional[str] = Query(None, description="Filter: 'true' for posted, 'false' for unposted, omit for all"),
+):
+    """Search and paginate opportunities."""
+    posted_bool = {"true": True, "false": False}.get(posted.lower()) if posted else None
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, get_all_opportunities)
+    return await loop.run_in_executor(None, search_opportunities, search or "", skip, limit, posted_bool)
+
+@app.get("/opportunities/{opportunity_id}", tags=["Opportunities"], summary="Get an opportunity by ID", response_model=OpportunityOut)
+async def get_opportunity(opportunity_id: int):
+    """Returns a single opportunity by its ID."""
+    def fetch():
+        db = SessionLocal()
+        try:
+            opp = db.query(Opportunity).filter_by(id=opportunity_id).first()
+            if opp:
+                return {
+                    "id": opp.id,
+                    "title": opp.title,
+                    "link": opp.link,
+                    "description": opp.description,
+                    "deadline": opp.deadline,
+                    "thumbnail": opp.thumbnail,
+                    "tags": opp.tags.split(", ") if opp.tags else [],
+                    "created_at": opp.created_at,
+                    "posted_to_telegram": opp.posted_to_telegram,
+                }
+            return None
+        finally:
+            db.close()
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, fetch)
+    if result is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+    return result
 
 @app.get("/opportunities/unposted", tags=["Opportunities"], summary="List unposted opportunities", response_model=list[OpportunityOut])
 async def get_unposted():

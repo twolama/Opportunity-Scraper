@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 from typing import Optional
 from dotenv import load_dotenv
@@ -12,6 +13,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 
 _http = requests.Session()
+
+def _sanitize(msg: str) -> str:
+    return re.sub(r'bot\d+:[\w-]+', 'bot***REDACTED***', str(msg))
 
 
 def post_to_telegram(opportunity: dict) -> bool:
@@ -63,11 +67,11 @@ def post_to_telegram(opportunity: dict) -> bool:
             update_posted_status(opportunity["id"])
             return True
         else:
-            print(f"[ERR] Telegram API Error: {response.status_code} - {response.text}")
+            print(f"[ERR] Telegram API Error: {response.status_code} - {_sanitize(response.text)}")
             return False
 
     except Exception as e:
-        print(f"[ERR] Exception while posting to Telegram: {e}")
+        print(f"[ERR] Exception while posting to Telegram: {_sanitize(e)}")
         return False
 
 

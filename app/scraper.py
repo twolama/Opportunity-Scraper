@@ -6,7 +6,7 @@ import random
 from datetime import datetime, timedelta
 import sys
 
-from app.database import save_opportunity, opportunity_exists
+from app.database import opportunity_exists, bulk_save_opportunities
 
 BASE_URL = "https://opportunitydesk.org"
 
@@ -122,6 +122,7 @@ def fetch_opportunities_by_date(target_date=None):
     articles = soup.select("article")
     print(f"[OK] Found {len(articles)} articles.")
 
+    batch = []
     for idx, article in enumerate(articles, start=1):
         try:
             title_link = article.find("a", string=True, href=True)
@@ -152,17 +153,17 @@ def fetch_opportunities_by_date(target_date=None):
                 print(f"[Exists] Already exists: {title}")
                 continue
 
-            saved = save_opportunity(opportunity, scraped_date=target_date)
-            if saved:
-                print(f"[OK] Saved: {title}")
-                all_opportunities.append(opportunity)
-            else:
-                print(f"[ERR] Failed to save: {title}")
+            batch.append(opportunity)
+            print(f"[OK] Queued: {title}")
 
         except Exception as e:
             print(f"[ERR] Error parsing article #{idx}: {e}")
 
-    return all_opportunities
+    if batch:
+        saved = bulk_save_opportunities(batch, scraped_date=target_date)
+        print(f"[Batch] Saved {saved}/{len(batch)} opportunities")
+        return batch[:saved]
+    return []
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
