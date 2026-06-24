@@ -35,6 +35,11 @@ from app.database import (
     add_admin,
     remove_admin,
     get_admins,
+    get_schedule_times,
+    add_schedule_time,
+    remove_schedule_time,
+    parse_time_12h,
+    format_time_12h,
 )
 from app.config import TELEGRAM_API_URL, BOT_OWNER_ID, PUBLIC_URL, USE_POLLING, RUN_SCHEDULER, API_KEY
 from app.keyboards import build_main_menu, build_date_nav_keyboard, build_year_picker, build_month_picker, build_day_picker, build_search_keyboard, build_stats_keyboard, build_browse_keyboard
@@ -145,6 +150,7 @@ _admin_names: dict[int, str] = {}
 _last_admin_refresh: float = 0
 _ADMIN_CACHE_TTL = 60
 _pending_admins: dict[int, str] = {}  # user_id -> first_name
+_expecting_schedule_input: dict[int, bool] = {}  # user_id -> expecting time input
 _invite_tokens: dict[str, tuple[int, float]] = {}    # token -> (owner_id, created_at)
 
 def _refresh_admin_cache():
@@ -302,7 +308,10 @@ def process_telegram_update(data, run_in_background=None):
                 "<i>Owner-only:</i>\n"
                 "/add_admin &lt;id&gt; - Add admin\n"
                 "/remove_admin &lt;id&gt; - Remove an admin\n"
-                "/list_admins - List all admins"
+                "/list_admins - List all admins\n"
+                "/add_schedule HH:MM - Add auto-scrape time (UTC)\n"
+                "/remove_schedule HH:MM - Remove a schedule time\n"
+                "/list_schedules - List all schedule times"
             )
             _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
                 "chat_id": chat_id, "text": msg, "parse_mode": "HTML"
@@ -456,6 +465,60 @@ def process_telegram_update(data, run_in_background=None):
         _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
             "chat_id": chat_id, "text": msg, "parse_mode": "HTML"
         })
+    elif message and text.startswith("/add_schedule") and user_id == BOT_OWNER_ID:
+        parts = text.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            msg = "Usage: <code>/add_schedule HH:MM</code> (24h UTC) or <code>/add_schedule 6:30 AM</code>"
+        else:
+            time_str = parse_time_12h(parts[1])
+            if not time_str:
+                msg = "❌ Invalid time. Use 24h format like <code>06:30</code> or 12h like <code>6:30 AM</code>."
+            elif add_schedule_time(time_str):
+                msg = f"✅ Schedule added: <code>{time_str}</code> ({format_time_12h(time_str)})"
+            else:
+                msg = f"❌ Schedule <code>{time_str}</code> already exists."
+        _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            "chat_id": chat_id, "text": msg, "parse_mode": "HTML"
+        })
+    elif message and text.startswith("/remove_schedule") and user_id == BOT_OWNER_ID:
+        parts = text.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            msg = "Usage: <code>/remove_schedule HH:MM</code> (24h UTC) or <code>/remove_schedule 6:30 AM</code>"
+        else:
+            time_str = parse_time_12h(parts[1])
+            if not time_str:
+                msg = "❌ Invalid time."
+            elif remove_schedule_time(time_str):
+                msg = f"🗑️ Schedule removed: <code>{time_str}</code> ({format_time_12h(time_str)})"
+            else:
+                msg = f"❌ Schedule not found."
+        _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            "chat_id": chat_id, "text": msg, "parse_mode": "HTML"
+        })
+    elif message and text.startswith("/list_schedules") and user_id == BOT_OWNER_ID:
+        times = get_schedule_times()
+        if not times:
+            msg = "<b>No schedules configured.</b>"
+        else:
+            lines = ["<b>⏰ Scheduled Scrape Times (UTC):</b>\n"]
+            for i, t in enumerate(times, 1):
+                lines.append(f"{i}. <code>{t}</code> ({format_time_12h(t)})")
+            msg = "\n".join(lines)
+        _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            "chat_id": chat_id, "text": msg, "parse_mode": "HTML"
+        })
+    elif message and user_id == BOT_OWNER_ID and _expecting_schedule_input.get(user_id) and text and not text.startswith("/"):
+        _expecting_schedule_input[user_id] = False
+        time_str = parse_time_12h(text)
+        if not time_str:
+            msg = "❌ Invalid time. Try <code>6:30 AM</code> or <code>06:30</code> (UTC)."
+        elif add_schedule_time(time_str):
+            msg = f"✅ Schedule added: <code>{time_str}</code> ({format_time_12h(time_str)})"
+        else:
+            msg = f"❌ Schedule <code>{time_str}</code> already exists."
+        _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            "chat_id": chat_id, "text": msg, "parse_mode": "HTML"
+        })
     elif callback_query:
         if text == "noop":
             callback_id = callback_query.get("id")
@@ -547,6 +610,69 @@ def process_telegram_update(data, run_in_background=None):
                         [{"text": "👥 Admin Menu", "callback_data": "admin_menu"}]
                     ]
                 }
+            })
+        elif text == "list_schedules" and user_id == BOT_OWNER_ID:
+            times = get_schedule_times()
+            if not times:
+                txt = "<b>No schedules configured.</b>\n\nTap ➕ Add Schedule below to set one."
+            else:
+                lines = ["<b>⏰ Scheduled Scrape Times (UTC):</b>\n"]
+                for i, t in enumerate(times, 1):
+                    lines.append(f"{i}. <code>{t}</code> ({format_time_12h(t)})")
+                txt = "\n".join(lines)
+            remove_buttons = [[{"text": f"❌ {format_time_12h(t)}", "callback_data": f"remove_sched_{t}"}] for t in times]
+            keyboard = remove_buttons + [
+                [{"text": "➕ Add Schedule", "callback_data": "add_schedule_prompt"}],
+                [{"text": "🔙 Main Menu", "callback_data": "main_menu"}]
+            ]
+            safe_edit_message_text({
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "text": txt,
+                "parse_mode": "HTML",
+                "reply_markup": {"inline_keyboard": keyboard}
+            })
+        elif text == "add_schedule_prompt" and user_id == BOT_OWNER_ID:
+            safe_edit_message_text({
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "text": (
+                    "<b>➕ Add Schedule</b>\n\n"
+                    "Send me a time in 12-hour or 24-hour format, e.g.:\n"
+                    "• <code>6:30 AM</code>\n"
+                    "• <code>10:59 PM</code>\n"
+                    "• <code>06:30</code>\n\n"
+                    "All times are in <b>UTC</b>."
+                ),
+                "parse_mode": "HTML",
+                "reply_markup": {
+                    "inline_keyboard": [
+                        [{"text": "🔙 Schedules", "callback_data": "list_schedules"}]
+                    ]
+                }
+            })
+            _expecting_schedule_input[user_id] = True
+        elif text.startswith("remove_sched_") and user_id == BOT_OWNER_ID:
+            time_str = text[len("remove_sched_"):]
+            removed = remove_schedule_time(time_str)
+            txt = f"🗑️ Removed <code>{time_str}</code> ({format_time_12h(time_str)})." if removed else f"❌ Schedule not found."
+            times = get_schedule_times()
+            if times:
+                lines = ["<b>⏰ Scheduled Scrape Times (UTC):</b>\n"]
+                for i, t in enumerate(times, 1):
+                    lines.append(f"{i}. <code>{t}</code> ({format_time_12h(t)})")
+                txt += "\n\n" + "\n".join(lines)
+            remove_buttons = [[{"text": f"❌ {format_time_12h(t)}", "callback_data": f"remove_sched_{t}"}] for t in times]
+            keyboard = remove_buttons + [
+                [{"text": "➕ Add Schedule", "callback_data": "add_schedule_prompt"}],
+                [{"text": "🔙 Main Menu", "callback_data": "main_menu"}]
+            ]
+            safe_edit_message_text({
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "text": txt,
+                "parse_mode": "HTML",
+                "reply_markup": {"inline_keyboard": keyboard}
             })
         elif text.startswith("remove_admin_click_") and user_id == BOT_OWNER_ID:
             target_id = int(text.replace("remove_admin_click_", ""))

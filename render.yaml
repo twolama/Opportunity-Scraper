@@ -12,5 +12,13 @@ services:
         sync: false
       - key: TELEGRAM_CHANNEL_ID
         sync: false
+      - key: BOT_OWNER_ID
+        sync: false
+      - key: API_KEY
+        sync: false
+      - key: PUBLIC_URL
+        sync: false
+      - key: USE_POLLING
+        value: "false"
       - key: RUN_SCHEDULER
         value: "true"

@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from os import getenv
 from typing import List, Optional
+import re
 from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text, Boolean, DateTime, and_, text, func, Index
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.exc import IntegrityError
@@ -48,6 +49,84 @@ class Admin(Base):
     added_by = Column(BigInteger, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class ScheduleTime(Base):
+    __tablename__ = "schedule_times"
+
+    id = Column(Integer, primary_key=True, index=True)
+    time_str = Column(String(5), unique=True, nullable=False)  # "HH:MM" in UTC
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+def get_schedule_times() -> list[str]:
+    db = SessionLocal()
+    try:
+        rows = db.query(ScheduleTime).order_by(ScheduleTime.time_str).all()
+        return [r.time_str for r in rows]
+    finally:
+        db.close()
+
+def add_schedule_time(time_str: str) -> bool:
+    db = SessionLocal()
+    try:
+        existing = db.query(ScheduleTime).filter(ScheduleTime.time_str == time_str).first()
+        if existing:
+            return False
+        db.add(ScheduleTime(time_str=time_str))
+        db.commit()
+        return True
+    except IntegrityError:
+        db.rollback()
+        return False
+    finally:
+        db.close()
+
+def remove_schedule_time(time_str: str) -> bool:
+    db = SessionLocal()
+    try:
+        row = db.query(ScheduleTime).filter(ScheduleTime.time_str == time_str).first()
+        if not row:
+            return False
+        db.delete(row)
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        return False
+    finally:
+        db.close()
+
+_TIME_RE = re.compile(r'^(\d{1,2}):(\d{2})(?:\s*([ap]\.?m\.?))?$', re.IGNORECASE)
+
+def parse_time_12h(text: str) -> str | None:
+    """Convert '6:30 AM' or '06:30' (24h) to '06:30' (24h UTC). Returns None if invalid."""
+    m = _TIME_RE.match(text.strip())
+    if not m:
+        return None
+    hour, minute, ampm = int(m.group(1)), m.group(2), m.group(3)
+    if ampm:
+        ampm = ampm.lower().replace(".", "")
+        if hour > 12 or hour < 1:
+            return None
+        if ampm == "pm" and hour != 12:
+            hour += 12
+        elif ampm == "am" and hour == 12:
+            hour = 0
+    else:
+        if hour > 23:
+            return None
+    return f"{hour:02d}:{minute}"
+
+def format_time_12h(time_str: str) -> str:
+    """Convert '16:59' to '4:59 PM'."""
+    try:
+        h, m = map(int, time_str.split(":"))
+        ampm = "AM" if h < 12 else "PM"
+        h12 = h % 12
+        if h12 == 0:
+            h12 = 12
+        return f"{h12}:{m:02d} {ampm}"
+    except Exception:
+        return time_str
+
 def init_db():
     """Create tables in DB if they don't exist"""
     Base.metadata.create_all(bind=engine)
@@ -93,6 +172,20 @@ def init_db():
         db.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_link ON opportunities (link)"))
         db.commit()
         print("[DB] Unique index on link created")
+    except Exception:
+        pass
+    finally:
+        db.close()
+    # Seed default schedule times if table is empty
+    try:
+        db = SessionLocal()
+        count = db.query(ScheduleTime).count()
+        if count == 0:
+            defaults = ["04:59", "10:59", "16:59"]
+            for t in defaults:
+                db.add(ScheduleTime(time_str=t))
+            db.commit()
+            print(f"[DB] Seeded {len(defaults)} default schedule times")
     except Exception:
         pass
     finally:

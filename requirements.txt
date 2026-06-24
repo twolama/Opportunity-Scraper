@@ -13,8 +13,3 @@ sqlalchemy
 starlette==0.46.2
 typing_extensions==4.14.1
 uvicorn==0.35.0
-asyncpg
-selenium
-
-schedule
-requests
