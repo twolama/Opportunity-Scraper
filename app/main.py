@@ -13,12 +13,13 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta
 from typing import Optional
 
-from app.scheduler import start_scheduler
+from app.scheduler import start_scheduler, reload_schedules
 from app.scraper import fetch_opportunities_by_date
 from app.telegram_bot import post_new_opportunities
 import requests
 from app.database import (
     init_db,
+    engine,
     get_all_opportunities,
     get_unposted_opportunities,
     get_unposted_by_date,
@@ -41,8 +42,20 @@ from app.database import (
     parse_time_12h,
     format_time_12h,
 )
-from app.config import TELEGRAM_API_URL, BOT_OWNER_ID, PUBLIC_URL, USE_POLLING, RUN_SCHEDULER, API_KEY
+import sentry_sdk
+from app.config import TELEGRAM_API_URL, BOT_OWNER_ID, PUBLIC_URL, USE_POLLING, RUN_SCHEDULER, API_KEY, SENTRY_DSN
 from app.keyboards import build_main_menu, build_date_nav_keyboard, build_year_picker, build_month_picker, build_day_picker, build_search_keyboard, build_stats_keyboard, build_browse_keyboard
+
+if SENTRY_DSN:
+    try:
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            traces_sample_rate=0.1,
+            send_default_pii=True,
+            environment="production" if PUBLIC_URL else "development",
+        )
+    except Exception:
+        pass  # Sentry is optional — never block startup
 
 # --- Reusable HTTP session (connection pool => way faster) ---
 _http = requests.Session()
@@ -141,8 +154,9 @@ async def verify_api_key(x_api_key: str = Header(default="", alias="X-API-Key"))
         raise HTTPException(status_code=403, detail="Invalid or missing API key")
     return x_api_key
 
-# Lazy-loaded bot username (from getMe)
+# Lazy-loaded bot info (from getMe)
 BOT_USERNAME: str | None = None
+BOT_FIRST_NAME: str = "Opportunity Search Bot"
 
 # --- In-memory admin cache (no DB query on every update) ---
 _admin_ids: set[int] = set()
@@ -256,7 +270,7 @@ def process_telegram_update(data, run_in_background=None):
             _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
                 "chat_id": chat_id,
                 "text": (
-                    "<b>Welcome to Opportunity Search Bot!</b>\n\n"
+                    f"<b>Welcome to {BOT_FIRST_NAME}!</b>\n\n"
                     "Use the menu below to control the bot, get analytics, and view opportunities.\n\n"
                     "<i>Created by 👉 @twolamaa </i>"
                 ),
@@ -476,6 +490,7 @@ def process_telegram_update(data, run_in_background=None):
                 msg = "❌ Invalid time. Use 24h like <code>06:30</code> or 12h like <code>6:30 AM</code>."
             elif add_schedule_time(time_str, "scrape"):
                 msg = f"✅ Search time added: <code>{time_str}</code> ({format_time_12h(time_str)})"
+                reload_schedules()
             else:
                 msg = f"❌ Search time <code>{time_str}</code> already exists."
         _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
@@ -491,6 +506,7 @@ def process_telegram_update(data, run_in_background=None):
                 msg = "❌ Invalid time."
             elif add_schedule_time(time_str, "post"):
                 msg = f"✅ Post time added: <code>{time_str}</code> ({format_time_12h(time_str)})"
+                reload_schedules()
             else:
                 msg = f"❌ Post time <code>{time_str}</code> already exists."
         _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
@@ -506,6 +522,7 @@ def process_telegram_update(data, run_in_background=None):
                 msg = "❌ Invalid time."
             elif remove_schedule_time(time_str, "scrape"):
                 msg = f"🗑️ Search time removed: <code>{time_str}</code> ({format_time_12h(time_str)})"
+                reload_schedules()
             else:
                 msg = f"❌ Search time not found."
         _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
@@ -521,6 +538,7 @@ def process_telegram_update(data, run_in_background=None):
                 msg = "❌ Invalid time."
             elif remove_schedule_time(time_str, "post"):
                 msg = f"🗑️ Post time removed: <code>{time_str}</code> ({format_time_12h(time_str)})"
+                reload_schedules()
             else:
                 msg = f"❌ Post time not found."
         _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
@@ -554,6 +572,7 @@ def process_telegram_update(data, run_in_background=None):
         elif add_schedule_time(time_str, pending_type):
             type_label = "Scrape" if pending_type == "scrape" else "Post"
             msg = f"✅ {type_label} time added: <code>{time_str}</code> ({format_time_12h(time_str)})"
+            reload_schedules()
         else:
             type_label = "Scrape" if pending_type == "scrape" else "Post"
             msg = f"❌ {type_label} time <code>{time_str}</code> already exists."
@@ -570,7 +589,7 @@ def process_telegram_update(data, run_in_background=None):
                 "chat_id": chat_id,
                 "message_id": callback_query["message"]["message_id"],
                 "text": (
-                    "<b>Opportunities Search Bot</b>\n\n"
+                    f"<b>{BOT_FIRST_NAME}</b>\n\n"
                     "Use the menu below to control the bot, get analytics, and view opportunities.\n\n"
                     "<i>Created by 👉 @twolamaa </i>"
                 ),
@@ -625,10 +644,10 @@ def process_telegram_update(data, run_in_background=None):
             })
         elif text == "generate_invite" and user_id == BOT_OWNER_ID:
             global BOT_USERNAME
-            if BOT_USERNAME is None:
+            if not BOT_USERNAME:
                 try:
                     me = _http.post(f"{TELEGRAM_API_URL}/getMe").json()
-                    BOT_USERNAME = me.get("result", {}).get("username", "")
+                    BOT_USERNAME = me.get("result", {}).get("username", "") or ""
                 except Exception:
                     BOT_USERNAME = ""
             token = secrets.token_hex(8)
@@ -751,6 +770,8 @@ def process_telegram_update(data, run_in_background=None):
         elif text.startswith("remove_scrape_") and user_id == BOT_OWNER_ID:
             time_str = text[len("remove_scrape_"):]
             removed = remove_schedule_time(time_str, "scrape")
+            if removed:
+                reload_schedules()
             txt = f"🗑️ Removed search <code>{time_str}</code>." if removed else "❌ Not found."
             times = get_schedule_times("scrape")
             if times:
@@ -770,6 +791,8 @@ def process_telegram_update(data, run_in_background=None):
         elif text.startswith("remove_post_") and user_id == BOT_OWNER_ID:
             time_str = text[len("remove_post_"):]
             removed = remove_schedule_time(time_str, "post")
+            if removed:
+                reload_schedules()
             txt = f"🗑️ Removed post <code>{time_str}</code>." if removed else "❌ Not found."
             times = get_schedule_times("post")
             if times:
@@ -778,38 +801,6 @@ def process_telegram_update(data, run_in_background=None):
             keyboard = rm + [
                 [{"text": "➕ Add Post Time", "callback_data": "add_post_prompt"}],
                 [{"text": "🔙 Schedules", "callback_data": "list_schedules"}]
-            ]
-            safe_edit_message_text({
-                "chat_id": chat_id,
-                "message_id": callback_query["message"]["message_id"],
-                "text": txt,
-                "parse_mode": "HTML",
-                "reply_markup": {"inline_keyboard": keyboard}
-            })
-            keyboard = scrape_rm + post_rm + [
-                [{"text": "➕ Add Scrape", "callback_data": "add_scrape_prompt"}, {"text": "➕ Add Post", "callback_data": "add_post_prompt"}],
-                [{"text": "🔙 Main Menu", "callback_data": "main_menu"}]
-            ]
-            safe_edit_message_text({
-                "chat_id": chat_id,
-                "message_id": callback_query["message"]["message_id"],
-                "text": txt,
-                "parse_mode": "HTML",
-                "reply_markup": {"inline_keyboard": keyboard}
-            })
-        elif text.startswith("remove_post_") and user_id == BOT_OWNER_ID:
-            time_str = text[len("remove_post_"):]
-            removed = remove_schedule_time(time_str, "post")
-            txt = f"🗑️ Removed post <code>{time_str}</code>." if removed else "❌ Not found."
-            scrape_times = get_schedule_times("scrape")
-            post_times = get_schedule_times("post")
-            if post_times:
-                txt += "\n\n<b>📤 Remaining Post Times:</b>\n" + "\n".join(f"{i}. <code>{t}</code> ({format_time_12h(t)})" for i, t in enumerate(post_times, 1))
-            scrape_rm = [[{"text": f"❌ {format_time_12h(t)}", "callback_data": f"remove_scrape_{t}"}] for t in scrape_times]
-            post_rm = [[{"text": f"❌ {format_time_12h(t)}", "callback_data": f"remove_post_{t}"}] for t in post_times]
-            keyboard = scrape_rm + post_rm + [
-                [{"text": "➕ Add Scrape", "callback_data": "add_scrape_prompt"}, {"text": "➕ Add Post", "callback_data": "add_post_prompt"}],
-                [{"text": "🔙 Main Menu", "callback_data": "main_menu"}]
             ]
             safe_edit_message_text({
                 "chat_id": chat_id,
@@ -1329,8 +1320,9 @@ app.add_middleware(
 )
 
 def set_webhook():
+    use_polling = os.getenv("USE_POLLING", "true").lower() == "true"
     public_url = os.getenv("PUBLIC_URL")
-    if public_url:
+    if public_url and not use_polling:
         webhook_url = f"{public_url.rstrip('/')}/webhook"
         resp = _http.post(f"{TELEGRAM_API_URL}/setWebhook", json={"url": webhook_url})
         if resp.ok:
@@ -1374,7 +1366,17 @@ def start_polling():
 @app.on_event("startup")
 def on_startup():
     """Initialize database tables and start the background scheduler."""
-    init_db()
+    global BOT_USERNAME, BOT_FIRST_NAME
+    try:
+        init_db()
+    except Exception as e:
+        logging.warning(f"DB init failed (will retry on next restart): {e}")
+    try:
+        me = _http.post(f"{TELEGRAM_API_URL}/getMe").json().get("result", {})
+        BOT_USERNAME = me.get("username", "")
+        BOT_FIRST_NAME = me.get("first_name", "Opportunity Search Bot")
+    except Exception:
+        pass
     try:
         # Register webhook if PUBLIC_URL is set (production)
         set_webhook()
@@ -1388,24 +1390,52 @@ def on_startup():
         Thread(target=start_scheduler, daemon=True).start()
         print("[OK] Scheduler started")
     # Self-keepalive: ping every 5min so Render doesn't sleep the service
-    def _keepalive():
-        while True:
-            time.sleep(300)
-            try:
-                _http.get(f"http://localhost:{os.getenv('PORT', '8000')}/ping", timeout=10)
-            except Exception:
-                pass
-    Thread(target=_keepalive, daemon=True).start()
+    if os.getenv("RENDER"):
+        def _keepalive():
+            while True:
+                time.sleep(300)
+                try:
+                    _http.get(f"http://localhost:{os.getenv('PORT', '8000')}/ping", timeout=10)
+                except Exception:
+                    pass
+        Thread(target=_keepalive, daemon=True).start()
+
+@app.on_event("shutdown")
+def on_shutdown():
+    """Gracefully close DB connections on shutdown."""
+    print("[Shutdown] Closing database connections...")
+    engine.dispose()
+    print("[Shutdown] Done.")
 
 @app.get("/", tags=["Health"], summary="Root welcome message", response_model=RootOut)
 async def root():
     """Returns a simple welcome message."""
     return {"message": "Am here to help you with opportunities!"}
 
-@app.get("/ping", tags=["Health"], summary="Health check", response_model=PingOut)
+@app.get("/ping", tags=["Health"], summary="Health check")
 async def ping():
-    """Returns a simple health-check status."""
-    return {"status": "ok"}
+    """Checks app, DB, and Telegram API connectivity."""
+    checks = {"app": "ok"}
+    try:
+        db = SessionLocal()
+        db.execute(Opportunity.__table__.select().limit(1))
+        db.close()
+        checks["db"] = "ok"
+    except Exception as e:
+        checks["db"] = f"error: {e}"
+    try:
+        tg = _http.get(f"{TELEGRAM_API_URL}/getMe", timeout=5)
+        if tg.ok:
+            checks["telegram"] = "ok"
+        else:
+            checks["telegram"] = f"error: {tg.status_code}"
+    except Exception as e:
+        checks["telegram"] = f"error: {e}"
+    all_ok = all(v == "ok" for v in checks.values())
+    if not all_ok:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail=checks)
+    return checks
 
 @app.head("/ping", tags=["Health"], summary="Health check (HEAD)", include_in_schema=False)
 async def ping_head():

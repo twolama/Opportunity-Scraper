@@ -1,3 +1,4 @@
+import logging
 import requests
 from bs4 import BeautifulSoup
 import re
@@ -5,8 +6,11 @@ import time
 import random
 from datetime import datetime, timedelta
 import sys
+import sentry_sdk
 
 from app.database import opportunity_exists, bulk_save_opportunities
+
+_logger = logging.getLogger(__name__)
 
 def clean_url(url):
     return re.sub(r'[\u2000-\u200F\u2028-\u202F\u205F-\u206F\uFEFF]', '', url).strip()
@@ -168,6 +172,15 @@ def fetch_opportunities_by_date(target_date=None):
         print(f"[Batch] Saved {saved}/{len(batch)} opportunities")
         return batch[:saved]
     return []
+
+def fetch_opportunities_by_date_safe(target_date=None):
+    """Wrapper that reports errors to Sentry."""
+    try:
+        return fetch_opportunities_by_date(target_date)
+    except Exception as e:
+        _logger.error(f"Scrape failed: {e}", exc_info=True)
+        sentry_sdk.capture_exception(e)
+        return []
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

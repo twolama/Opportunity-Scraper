@@ -1,0 +1,75 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: opportunity-scraper
+    restart: unless-stopped
+    dns:
+      - 192.168.8.1
+      - 8.8.8.8
+    volumes:
+      - ./docker/resolv.conf:/etc/resolv.conf
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-opportunity_scraper}
+      - PUBLIC_URL=${PUBLIC_URL:-}
+      - USE_POLLING=true
+      - RUN_SCHEDULER=${RUN_SCHEDULER:-true}
+      - UVICORN_WORKERS=1
+      - TZ=Africa/Addis_Ababa
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - oppnet
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  db:
+    image: postgres:16-alpine
+    container_name: opportunity-db
+    restart: unless-stopped
+    dns:
+      - 192.168.8.1
+      - 8.8.8.8
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
+      - POSTGRES_DB=${DB_NAME:-opportunity_scraper}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-opportunity_scraper}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    ports:
+      - "5432:5432"
+    networks:
+      - oppnet
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pgdata:
+
+networks:
+  oppnet:
+    driver: bridge

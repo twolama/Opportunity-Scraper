@@ -19,6 +19,8 @@ engine = create_engine(
     future=True, 
     pool_pre_ping=True,
     pool_recycle=300,
+    pool_size=int(getenv("DB_POOL_SIZE", "10")),
+    max_overflow=int(getenv("DB_MAX_OVERFLOW", "20")),
     connect_args={"keepalives_idle": 60, "keepalives_interval": 10, "keepalives_count": 5}
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
