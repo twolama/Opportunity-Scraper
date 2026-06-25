@@ -16,6 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
+ENV TZ=Africa/Addis_Ababa
+
 RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
 
 WORKDIR /app

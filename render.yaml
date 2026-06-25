@@ -5,6 +5,7 @@ services:
     plan: free
     dockerfilePath: ./Dockerfile
     autoDeploy: true
+    healthCheckPath: /ping
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -14,11 +15,19 @@ services:
         sync: false
       - key: BOT_OWNER_ID
         sync: false
+      - key: SENTRY_DSN
+        sync: false
       - key: API_KEY
         sync: false
       - key: PUBLIC_URL
         sync: false
+      - key: TZ
+        value: Africa/Addis_Ababa
       - key: USE_POLLING
         value: "false"
       - key: RUN_SCHEDULER
         value: "true"
+      - key: DB_POOL_SIZE
+        value: "10"
+      - key: DB_MAX_OVERFLOW
+        value: "20"
