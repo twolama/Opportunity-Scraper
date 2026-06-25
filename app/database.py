@@ -12,6 +12,13 @@ load_dotenv()  # loads env vars from .env file
 # Load DB connection from env
 DATABASE_URL = getenv("DATABASE_URL")
 
+# Build connect args
+_connect_args = {"keepalives_idle": 60, "keepalives_interval": 10, "keepalives_count": 5}
+
+# Supabase / cloud Postgres requires SSL
+if DATABASE_URL and ("supabase" in DATABASE_URL.lower() or getenv("DB_SSL", "false").lower() == "true"):
+    _connect_args["sslmode"] = "require"
+
 # Create engine & session factory
 engine = create_engine(
     DATABASE_URL, 
@@ -19,9 +26,9 @@ engine = create_engine(
     future=True, 
     pool_pre_ping=True,
     pool_recycle=300,
-    pool_size=int(getenv("DB_POOL_SIZE", "10")),
-    max_overflow=int(getenv("DB_MAX_OVERFLOW", "20")),
-    connect_args={"keepalives_idle": 60, "keepalives_interval": 10, "keepalives_count": 5}
+    pool_size=int(getenv("DB_POOL_SIZE", "5")),
+    max_overflow=int(getenv("DB_MAX_OVERFLOW", "5")),
+    connect_args=_connect_args
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
