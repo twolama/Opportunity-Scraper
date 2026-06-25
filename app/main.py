@@ -141,9 +141,9 @@ class StatsOut(BaseModel):
 
 app = FastAPI(
     title="Opportunity Search API",
-    description="Searches for opportunities (scholarships, grants, fellowships) from opportunitydesk.org, stores them in PostgreSQL, and posts new ones to a Telegram channel.",
+    description="Searches for opportunities (scholarships, grants, fellowships), stores them, and posts new ones to a Telegram channel.",
     version="1.0.0",
-    contact={"name": "Mecha Temesgen", "url": "https://t.me/twolamaa"},
+    contact={"name": "Mecha T.", "url": "https://twolama.me"},
 )
 
 # API Key auth dependency for write endpoints
