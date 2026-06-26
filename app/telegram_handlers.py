@@ -42,7 +42,7 @@ from app.database import (
     get_active_channels,
 )
 from app.telegram_bot import post_to_telegram
-from app.config import TELEGRAM_API_URL, BOT_OWNER_ID
+from app.config import TELEGRAM_API_URL, BOT_OWNER_ID, TELEGRAM_CHANNEL_ID
 from app.keyboards import (
     build_main_menu, build_date_nav_keyboard, build_year_picker,
     build_month_picker, build_day_picker, build_search_keyboard,
@@ -1088,10 +1088,7 @@ def process_telegram_update(data, run_in_background=None):
                         })
                     except Exception:
                         logger.warning("Failed to send error message to Telegram (chat_id=%s)", chat_id, exc_info=True)
-            if run_in_background:
-                run_in_background(_scrape_date_only)
-            else:
-                Thread(target=_scrape_date_only, daemon=True).start()
+            Thread(target=_scrape_date_only, daemon=True).start()
         elif text.startswith("post_date_"):
             date_str = text.replace("post_date_", "")
             def _post_date_job():
@@ -1220,10 +1217,7 @@ def process_telegram_update(data, run_in_background=None):
                 message_id = resp.json().get("result", {}).get("message_id")
             except Exception:
                 message_id = None
-            if run_in_background:
-                run_in_background(_scrape_only, today, chat_id, message_id)
-            else:
-                Thread(target=_scrape_only, args=(today, chat_id, message_id), daemon=True).start()
+            Thread(target=_scrape_only, args=(today, chat_id, message_id), daemon=True).start()
         elif text == "goto_date_menu":
             _http.post(f"{TELEGRAM_API_URL}/sendChatAction", json={
                 "chat_id": chat_id,

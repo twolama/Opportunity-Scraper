@@ -85,11 +85,11 @@ async def lifespan(app):
         except Exception as e:
             logging.warning(_sanitize(f"Webhook setup failed (non-fatal): {e}"))
         if USE_POLLING:
-            t = Thread(target=start_polling, args=(_shutdown_event,))
+            t = Thread(target=start_polling, args=(_shutdown_event,), daemon=True)
             t.start()
             threads.append(t)
         if RUN_SCHEDULER:
-            t = Thread(target=start_scheduler, args=(_shutdown_event,))
+            t = Thread(target=start_scheduler, args=(_shutdown_event,), daemon=True)
             t.start()
             threads.append(t)
             _logger.info("Scheduler started (primary worker)")
@@ -106,7 +106,7 @@ async def lifespan(app):
                     resp.content
                 except Exception:
                     pass
-        t = Thread(target=_keepalive, args=(_shutdown_event,))
+        t = Thread(target=_keepalive, args=(_shutdown_event,), daemon=True)
         t.start()
         threads.append(t)
     yield
