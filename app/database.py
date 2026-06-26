@@ -3,8 +3,8 @@ from datetime import datetime, timedelta
 from os import getenv
 from typing import List, Optional
 import re
-from sqlalchemy import Column, Integer, BigInteger, String, Text, Boolean, DateTime, func, Index, case
-from sqlalchemy.orm import declarative_base
+from sqlalchemy import Column, Integer, BigInteger, String, Text, Boolean, DateTime, func, Index, case, ForeignKey, Table
+from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.exc import IntegrityError
 
 from app.db import engine, SessionLocal, get_session
@@ -12,6 +12,19 @@ from app.db import engine, SessionLocal, get_session
 _logger = logging.getLogger(__name__)
 
 Base = declarative_base()
+
+
+opportunity_tags = Table(
+    "opportunity_tags", Base.metadata,
+    Column("opportunity_id", Integer, ForeignKey("opportunities.id", ondelete="CASCADE"), primary_key=True),
+    Column("tag_id", Integer, ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class Tag(Base):
+    __tablename__ = "tags"
+    id = Column(Integer, primary_key=True)
+    name = Column(String, unique=True, nullable=False)
 
 
 class Opportunity(Base):
@@ -26,6 +39,8 @@ class Opportunity(Base):
     tags = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
     posted_to_telegram = Column(Boolean, default=False)
+
+    tags_rel = relationship("Tag", secondary=opportunity_tags, lazy="selectin")
 
     __table_args__ = (
         Index("idx_posted_created", "posted_to_telegram", "created_at"),
@@ -242,7 +257,7 @@ def init_db():
                 existing = db.query(Admin).filter(Admin.user_id == owner).first()
                 if not existing:
                     db.add(Admin(user_id=owner, name="Owner", added_by=owner))
-                    print(f"[Admin] Owner {owner} registered as admin")
+                    _logger.info("Owner %s registered as admin", owner)
         except Exception:
             _logger.warning("Failed to register owner as admin", exc_info=True)
     try:
@@ -252,11 +267,11 @@ def init_db():
             if scrape_count == 0:
                 for t in ["04:59", "10:59", "16:59"]:
                     db.add(ScheduleTime(time_str=t, schedule_type="scrape"))
-                print(f"[DB] Seeded default scrape times")
+                _logger.info("Seeded default scrape times")
             if post_count == 0:
                 for t in ["08:00", "14:00", "20:00"]:
                     db.add(ScheduleTime(time_str=t, schedule_type="post"))
-                print(f"[DB] Seeded default post times")
+                _logger.info("Seeded default post times")
     except Exception:
         _logger.warning("Failed to seed default schedule times", exc_info=True)
 
@@ -322,6 +337,21 @@ def opportunities_exist(links: list[str]) -> set[str]:
         return {r[0] for r in results}
 
 
+def _set_opportunity_tags(db, opp_id: int, tag_names: list[str]):
+    """Associate tags with an opportunity, creating new tags as needed."""
+    db.execute(opportunity_tags.delete().where(opportunity_tags.c.opportunity_id == opp_id))
+    for name in tag_names:
+        name = name.strip()
+        if not name:
+            continue
+        tag = db.query(Tag).filter(Tag.name == name).first()
+        if not tag:
+            tag = Tag(name=name)
+            db.add(tag)
+            db.flush()
+        db.execute(opportunity_tags.insert().values(opportunity_id=opp_id, tag_id=tag.id))
+
+
 def save_opportunity(opportunity: dict, scraped_date: Optional[str] = None) -> Optional[int]:
     if scraped_date:
         try:
@@ -343,6 +373,7 @@ def save_opportunity(opportunity: dict, scraped_date: Optional[str] = None) -> O
             )
             db.add(opp)
             db.flush()
+            _set_opportunity_tags(db, opp.id, opportunity.get('tags', []))
             opp_id = opp.id
         return opp_id
     except IntegrityError:
@@ -369,16 +400,20 @@ def update_opportunity(opportunity_id: int, data: dict) -> bool:
             if not opp:
                 return False
             for key, val in data.items():
-                if hasattr(opp, key) and val is not None:
-                    if key == "tags" and isinstance(val, list):
-                        setattr(opp, key, ", ".join(val))
-                    elif key == "created_at" and isinstance(val, str):
-                        try:
-                            setattr(opp, key, datetime.strptime(val, "%Y-%m-%d"))
-                        except ValueError:
-                            _logger.warning("Invalid date format for created_at: %s", val)
-                    else:
-                        setattr(opp, key, val)
+                if val is None:
+                    continue
+                if key == "tags" and isinstance(val, list):
+                    setattr(opp, key, ", ".join(val))
+                elif key == "created_at" and isinstance(val, str):
+                    try:
+                        setattr(opp, key, datetime.strptime(val, "%Y-%m-%d"))
+                    except ValueError:
+                        _logger.warning("Invalid date format for created_at: %s", val)
+                elif hasattr(opp, key):
+                    setattr(opp, key, val)
+            db.flush()
+            if "tags" in data and isinstance(data["tags"], list):
+                _set_opportunity_tags(db, opp.id, data["tags"])
             return True
     except Exception:
         return False
@@ -405,7 +440,7 @@ def get_unposted_opportunities() -> List[dict]:
 def get_all_opportunities() -> List[dict]:
     with get_session() as db:
         results = db.query(Opportunity).order_by(Opportunity.created_at.desc()).all()
-        print(f"Fetched {len(results)} opportunities from DB")
+        _logger.info("Fetched %d opportunities from DB", len(results))
         return [opportunity_to_dict(opp) for opp in results]
 
 
@@ -417,7 +452,7 @@ def opportunity_to_dict(opp, include_status: bool = True) -> dict:
         "description": opp.description,
         "deadline": opp.deadline,
         "thumbnail": opp.thumbnail,
-        "tags": opp.tags.split(", ") if opp.tags else [],
+        "tags": [t.name for t in opp.tags_rel] if opp.tags_rel else [],
     }
     if include_status:
         d["created_at"] = opp.created_at
@@ -481,18 +516,15 @@ def get_stats_from_db() -> dict:
         week_count = row[3] or 0
         month_count = row[4] or 0
 
-        from collections import Counter
-        tag_counter: Counter = Counter()
-        TAG_LIMIT = 10000
-        all_tags = db.query(Opportunity.tags).filter(
-            Opportunity.tags.isnot(None), Opportunity.tags != ""
-        ).limit(TAG_LIMIT).all()
-        for (tags_str,) in all_tags:
-            for tag in tags_str.split(", "):
-                tag = tag.strip()
-                if tag:
-                    tag_counter[tag] += 1
-        top_tags = tag_counter.most_common(10)
+        top_tags = (
+            db.query(Tag.name, func.count(opportunity_tags.c.opportunity_id))
+            .join(opportunity_tags, Tag.id == opportunity_tags.c.tag_id)
+            .group_by(Tag.id, Tag.name)
+            .order_by(func.count(opportunity_tags.c.opportunity_id).desc())
+            .limit(10)
+            .all()
+        )
+        top_tags = [(name, count) for name, count in top_tags]
 
         return {
             "total": total,
@@ -512,11 +544,14 @@ def search_opportunities(keyword: str, skip: int = 0, limit: int = 10, posted: O
         q = db.query(Opportunity)
         if keyword:
             like = f"%{keyword}%"
-            q = q.filter(
-                (Opportunity.title.ilike(like)) |
-                (Opportunity.description.ilike(like)) |
-                (Opportunity.tags.ilike(like))
-            )
+            q = q.outerjoin(opportunity_tags, Opportunity.id == opportunity_tags.c.opportunity_id) \
+                 .outerjoin(Tag, opportunity_tags.c.tag_id == Tag.id) \
+                 .filter(
+                     (Opportunity.title.ilike(like)) |
+                     (Opportunity.description.ilike(like)) |
+                     (Opportunity.tags.ilike(like)) |
+                     (Tag.name.ilike(like))
+                 ).distinct()
         if posted is not None:
             q = q.filter(Opportunity.posted_to_telegram == posted)
         total = q.count()
@@ -538,9 +573,13 @@ def bulk_save_opportunities(opportunities: list[dict], scraped_date: Optional[st
                 dt = datetime.utcnow()
         else:
             dt = datetime.utcnow()
-        rows = []
+        existing_links = opportunities_exist([o["link"] for o in opportunities])
+        new_data = []
+        tag_map = []
         for opp in opportunities:
-            rows.append({
+            if opp["link"] in existing_links:
+                continue
+            new_data.append({
                 "title": opp['title'],
                 "link": opp['link'],
                 "description": opp.get('description', ''),
@@ -549,15 +588,16 @@ def bulk_save_opportunities(opportunities: list[dict], scraped_date: Optional[st
                 "tags": ', '.join(opp.get('tags', [])),
                 "created_at": dt,
             })
-        if not rows:
-            return 0
-        existing_links = opportunities_exist([r["link"] for r in rows])
-        new_rows = [r for r in rows if r["link"] not in existing_links]
-        if not new_rows:
+            tag_map.append(opp.get("tags", []))
+        if not new_data:
             return 0
         with get_session() as db:
-            db.execute(Opportunity.__table__.insert(), new_rows)
-        return len(new_rows)
+            from sqlalchemy import insert
+            stmt = insert(Opportunity).returning(Opportunity.id)
+            result = db.execute(stmt, new_data)
+            for row_id, tags in zip(result.scalars().all(), tag_map):
+                _set_opportunity_tags(db, row_id, tags)
+        return len(new_data)
     except Exception:
         return 0
 
@@ -569,4 +609,4 @@ def delete_old_entries(days: Optional[int] = None):
     with get_session() as db:
         cutoff_date = datetime.utcnow() - timedelta(days=days)
         deleted = db.query(Opportunity).filter(Opportunity.created_at < cutoff_date).delete()
-        print(f"[Clean] Deleted {deleted} old opportunities (older than {days} days).")
+        _logger.info("Deleted %d old opportunities (older than %s days)", deleted, days)

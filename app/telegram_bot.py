@@ -49,7 +49,9 @@ def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, (ConnectionError, requests.ConnectionError)):
         return True
     if isinstance(exc, requests.HTTPError):
-        return exc.response is not None and exc.response.status_code >= 500
+        if exc.response is not None:
+            return exc.response.status_code == 429 or exc.response.status_code >= 500
+        return False
     return isinstance(exc, requests.RequestException)
 
 
@@ -71,7 +73,7 @@ def _post_to_telegram_with_retry(payload: dict, use_photo: bool = False) -> requ
 
 def post_to_telegram(opportunity: dict) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
-        print("[ERR] Missing Telegram credentials in environment variables.")
+        _logger.error("Missing Telegram credentials in environment variables.")
         return False
 
     message = format_telegram_message(opportunity)
@@ -136,11 +138,11 @@ def post_new_opportunities(date_str: Optional[str] = None):
     """Fetch unposted opportunities from DB and post them to Telegram."""
     opportunities = get_unposted_opportunities()
     if not opportunities:
-        print("No new opportunities to post.")
+        _logger.info("No new opportunities to post.")
         return
     for opp in opportunities:
         posted = post_to_telegram(opp)
         if posted:
-            print(f"Posted: {opp['title']}")
+            _logger.info("Posted: %s", opp["title"])
         else:
-            print(f"Failed to post: {opp['title']}")
+            _logger.warning("Failed to post: %s", opp["title"])

@@ -4,9 +4,18 @@ import io
 import asyncio
 import time
 import logging
+import signal
+import sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stdout,
+)
+_logger = logging.getLogger(__name__)
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, BackgroundTasks, Query
-from threading import Thread
+from threading import Thread, Event
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
 from typing import Optional
@@ -53,6 +62,8 @@ from app.http_client import http as _http, sanitize as _sanitize
 from app.rate_limiter import api_limiter
 from app.telegram_handlers import process_telegram_update, set_bot_info
 
+_shutdown_event = Event()
+
 @asynccontextmanager
 async def lifespan(app):
     try:
@@ -67,32 +78,45 @@ async def lifespan(app):
     except Exception:
         logging.warning("Failed to get bot info from Telegram (non-fatal)")
     primary = os.getenv("PRIMARY_WORKER", "true").lower() == "true"
+    threads = []
     if primary:
         try:
             set_webhook()
         except Exception as e:
             logging.warning(_sanitize(f"Webhook setup failed (non-fatal): {e}"))
         if USE_POLLING:
-            Thread(target=start_polling, daemon=True).start()
+            t = Thread(target=start_polling, args=(_shutdown_event,))
+            t.start()
+            threads.append(t)
         if RUN_SCHEDULER:
-            Thread(target=start_scheduler, daemon=True).start()
-            print("[OK] Scheduler started (primary worker)")
+            t = Thread(target=start_scheduler, args=(_shutdown_event,))
+            t.start()
+            threads.append(t)
+            _logger.info("Scheduler started (primary worker)")
     else:
-        print("[OK] Secondary worker (no scheduler/webhook)")
+        _logger.info("Secondary worker (no scheduler/webhook)")
     if os.getenv("RENDER"):
-        def _keepalive():
-            while True:
-                time.sleep(300)
+        def _keepalive(shutdown: Event):
+            while not shutdown.is_set():
+                shutdown.wait(300)
+                if shutdown.is_set():
+                    break
                 try:
                     resp = _http.get(f"http://localhost:{os.getenv('PORT', '8000')}/ping", timeout=10)
                     resp.content
                 except Exception:
                     pass
-        Thread(target=_keepalive, daemon=True).start()
+        t = Thread(target=_keepalive, args=(_shutdown_event,))
+        t.start()
+        threads.append(t)
     yield
-    print("[Shutdown] Closing database connections...")
+    _logger.info("Shutdown: signalling threads to stop...")
+    _shutdown_event.set()
+    for t in threads:
+        t.join(timeout=10)
+    _logger.info("Shutdown: closing database connections...")
     engine.dispose()
-    print("[Shutdown] Done.")
+    _logger.info("Shutdown: done.")
 
 
 app = FastAPI(
@@ -162,19 +186,19 @@ def set_webhook():
         webhook_url = f"{public_url.rstrip('/')}/webhook"
         resp = _http.post(f"{TELEGRAM_API_URL}/setWebhook", json={"url": webhook_url})
         if resp.ok:
-            print(f"[OK] Webhook set to {webhook_url}")
+            _logger.info("Webhook set to %s", webhook_url)
         else:
-            print(f"[ERR] Failed to set webhook: {_sanitize(resp.text)}")
+            _logger.warning("Failed to set webhook: %s", _sanitize(resp.text))
     else:
         _http.get(f"{TELEGRAM_API_URL}/deleteWebhook")
-        print("[OK] Webhook cleared (polling mode)")
+        _logger.info("Webhook cleared (polling mode)")
 
-def start_polling():
+def start_polling(shutdown: Event):
     offset = 0
     backoff = 1
     max_backoff = 30
-    print("[Polling] Started (local mode - no webhook required)")
-    while True:
+    _logger.info("Polling started (local mode - no webhook required)")
+    while not shutdown.is_set():
         try:
             resp = _http.get(
                 f"{TELEGRAM_API_URL}/getUpdates",
@@ -256,7 +280,7 @@ async def export_opportunities(
     from fastapi.responses import StreamingResponse
     posted_bool = {"true": True, "false": False}.get(posted.lower()) if posted else None
     def _fetch_all():
-        return search_opportunities(search or "", 0, 100000, posted_bool)
+        return search_opportunities(search or "", 0, 1000000, posted_bool)
     loop = asyncio.get_running_loop()
     data = await loop.run_in_executor(None, _fetch_all)
     output = io.StringIO()

@@ -47,7 +47,7 @@ def safe_get(session, url, max_retries=5):
             response.raise_for_status()
             return response
         except requests.exceptions.RequestException as e:
-            print(f"[WARN] Attempt {i + 1} failed for {url}: {e}")
+            _logger.warning("Attempt %d failed for %s: %s", i + 1, url, e)
             time.sleep((2 ** i) + random.uniform(2, 4))
     return None
 
@@ -133,7 +133,7 @@ def _fetch_article(article):
     try:
         link, deadline, thumbnail, description, tags = extract_detail_info(session, detail_url)
     except Exception:
-        print(f"[ERR] Failed to fetch detail for: {title}")
+        _logger.warning("Failed to fetch detail for: %s", title)
         return None
     finally:
         session.close()
@@ -160,16 +160,16 @@ def fetch_opportunities_by_date(target_date=None):
         target_date = (datetime.now() - timedelta(days=1)).strftime("%Y/%m/%d")
 
     url = f"{BASE_URL}/{target_date}/"
-    print(f"\n[Fetch] {url}")
+    _logger.info("Fetching %s", url)
 
     page_response = safe_get(make_session(), url)
     if not page_response:
-        print(f"[ERR] Could not fetch {url}")
+        _logger.warning("Could not fetch %s", url)
         return []
 
     soup = BeautifulSoup(page_response.text, "html.parser")
     articles = soup.select("article")
-    print(f"[OK] Found {len(articles)} articles.")
+    _logger.info("Found %d articles.", len(articles))
 
     # Phase 1: fetch all detail pages in parallel
     candidates = []
@@ -190,7 +190,7 @@ def fetch_opportunities_by_date(target_date=None):
 
     if batch:
         saved = bulk_save_opportunities(batch, scraped_date=target_date)
-        print(f"[Batch] Saved {saved}/{len(batch)} opportunities (skipped {len(candidates) - len(batch)} existing)")
+        _logger.info("Saved %d/%d opportunities (skipped %d existing)", saved, len(batch), len(candidates) - len(batch))
         if saved == len(batch):
             return batch
         return []
@@ -211,6 +211,6 @@ if __name__ == "__main__":
             datetime.strptime(sys.argv[1], "%Y/%m/%d")
             fetch_opportunities_by_date(sys.argv[1])
         except ValueError:
-            print("Invalid date. Use format: YYYY/MM/DD")
+            _logger.warning("Invalid date. Use format: YYYY/MM/DD")
     else:
         fetch_opportunities_by_date()

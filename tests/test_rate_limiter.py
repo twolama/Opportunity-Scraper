@@ -47,9 +47,9 @@ class TestPerIPLimiter:
         assert limiter.consume("new_ip") == 0.0
 
     def test_ttl_eviction(self):
-        limiter = PerIPLimiter(rate=10.0, capacity=5, ttl=0.001)
+        limiter = PerIPLimiter(rate=10.0, capacity=5, ttl=0.05)
         limiter.consume("test_ip")
         assert "test_ip" in limiter._buckets
-        time.sleep(0.002)
+        time.sleep(0.1)
         limiter.consume("other_ip")
         assert "test_ip" not in limiter._buckets

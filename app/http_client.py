@@ -1,12 +1,19 @@
 import re
 import requests
 from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 class _TimeoutAdapter(HTTPAdapter):
-    def __init__(self, timeout=15, *args, **kwargs):
+    def __init__(self, timeout=15, max_retries=2, *args, **kwargs):
         self.timeout = timeout
-        super().__init__(*args, **kwargs)
+        retry_strategy = Retry(
+            total=max_retries,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST", "PUT", "DELETE", "HEAD"],
+        )
+        super().__init__(max_retries=retry_strategy, *args, **kwargs)
 
     def send(self, request, **kwargs):
         kwargs.setdefault("timeout", self.timeout)

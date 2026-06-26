@@ -2,6 +2,7 @@ import math
 import schedule
 import time
 import logging
+import threading
 from datetime import datetime, timedelta
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -46,11 +47,11 @@ def reload_schedules():
         for t in post_times:
             if t >= now:
                 schedule.every().day.at(t).do(run_post)
-        print(f"[Scheduler] Search times: {scrape_times}")
-        print(f"[Scheduler] Post times: {post_times}")
+        logger.info("Search times: %s", scrape_times)
+        logger.info("Post times: %s", post_times)
 
 def run_scrape():
-    print(f"[Scheduler] Running search...")
+    logger.info("Running search...")
     try:
         fetch_opportunities_by_date_safe()
         delete_old_entries()
@@ -76,7 +77,7 @@ def _catch_up_scrapes():
         return
     for i in range(min(passed, 5)):
         day = (datetime.now() - timedelta(days=i + 1)).strftime("%Y/%m/%d")
-        print(f"[Scheduler] Catch-up search for {day} ({i + 1}/{passed} missed slot(s))")
+        logger.info("Catch-up search for %s (%d/%d missed slot(s))", day, i + 1, passed)
         try:
             fetch_opportunities_by_date_safe(day)
         except Exception:
@@ -116,22 +117,22 @@ def run_post():
             logger.warning("Telegram circuit breaker open (%s consecutive failures), skipping post cycle", _telegram_failures)
             _telegram_failures = max(0, _telegram_failures - 1)
             return
-    print(f"[Scheduler] Running post...")
+    logger.info("Running post...")
     try:
         unposted = get_unposted_opportunities()
         total = len(get_schedule_times("post"))
         remaining = _remaining_post_slots_today()
         if not unposted:
-            print("[Scheduler] No unposted opportunities.")
+            logger.info("No unposted opportunities.")
             return
         if total <= 0:
-            print("[Scheduler] No post times configured.")
+            logger.info("No post times configured.")
             return
         if remaining <= 0:
             remaining = total
         batch_size = math.ceil(len(unposted) / remaining)
         batch = unposted[:batch_size]
-        print(f"[Scheduler] Posting {len(batch)}/{len(unposted)} opportunities ({batch_size} per {remaining} remaining slot(s))")
+        logger.info("Posting %d/%d opportunities (%d per %d remaining slot(s))", len(batch), len(unposted), batch_size, remaining)
         sent = _post_batch(batch)
         with _telegram_failures_lock:
             if sent == 0 and batch:
@@ -163,16 +164,16 @@ def _catch_up_posts():
     batch_per_slot = math.ceil(len(unposted) / total)
     batch_size = min(batch_per_slot * passed, len(unposted))
     batch = unposted[:batch_size]
-    print(f"[Scheduler] Catch-up: posting {len(batch)}/{len(unposted)} opportunities ({passed} slot(s) missed)")
+    logger.info("Catch-up: posting %d/%d opportunities (%d slot(s) missed)", len(batch), len(unposted), passed)
     sent = _post_batch(batch)
     _catch_up_done_today = today
 
-def start_scheduler():
+def start_scheduler(shutdown: threading.Event | None = None):
     reload_schedules()
     _catch_up_scrapes()
     _catch_up_posts()
     check_counter = 0
-    while True:
+    while not (shutdown and shutdown.is_set()):
         try:
             schedule.run_pending()
             check_counter += 1
