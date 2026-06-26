@@ -1,7 +1,6 @@
 import pytest
 from app.database import (
     save_opportunity,
-    get_opportunity_by_id,
     get_unposted_opportunities,
     search_opportunities,
     get_stats_from_db,
@@ -37,12 +36,15 @@ class TestOpportunityCRUD:
             "tags": ["education", "scholarship"],
         }
         assert save_opportunity(opp)
-        result = get_opportunity_by_id(1)
-        assert result is not None
-        assert result["title"] == "Test Scholarship"
-        assert result["link"] == "https://example.com/test"
-        assert "created_at" in result
-        assert result["posted_to_telegram"] is False
+        from app.database import Opportunity as OppModel
+        from app.db import get_session
+        with get_session() as db:
+            row = db.query(OppModel).filter_by(link="https://example.com/test").first()
+            assert row is not None
+            assert row.title == "Test Scholarship"
+            assert row.link == "https://example.com/test"
+            assert row.created_at is not None
+            assert row.posted_to_telegram is False
 
     def test_duplicate_link(self):
         opp = {

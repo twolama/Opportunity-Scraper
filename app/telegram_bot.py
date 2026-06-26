@@ -6,7 +6,7 @@ import logging
 import requests
 from typing import Optional
 from dotenv import load_dotenv
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 import sentry_sdk
 from app.database import update_posted_status, get_unposted_opportunities
@@ -17,30 +17,8 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 
-from requests.adapters import HTTPAdapter
-
-class _TimeoutAdapter(HTTPAdapter):
-    def __init__(self, timeout=15, *args, **kwargs):
-        self.timeout = timeout
-        super().__init__(*args, **kwargs)
-    def send(self, request, **kwargs):
-        kwargs.setdefault("timeout", self.timeout)
-        return super().send(request, **kwargs)
-
-_http = requests.Session()
-_http.mount("https://", _TimeoutAdapter(timeout=15))
-_http.mount("http://", _TimeoutAdapter(timeout=15))
+from app.http_client import http as _http, sanitize as _sanitize, strip_invisible as _strip_invisible
 _logger = logging.getLogger(__name__)
-
-def _sanitize(msg: str) -> str:
-    return re.sub(r'bot\d+:[\w-]+', 'bot***REDACTED***', str(msg))
-
-
-_INVISIBLE_CHARS = re.compile(r'[\u2000-\u200F\u2028-\u202F\u205F-\u206F\uFEFF\u00AD\u061C\u180E]')
-
-
-def _strip_invisible(text: str) -> str:
-    return _INVISIBLE_CHARS.sub('', text)
 
 
 def _close_html_tags(text: str) -> str:
@@ -67,14 +45,18 @@ def _close_html_tags(text: str) -> str:
     return text
 
 
-def _telegram_retry() -> bool:
-    """Return True to retry on any RequestException."""
-    return True
+def _is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, (ConnectionError, requests.ConnectionError)):
+        return True
+    if isinstance(exc, requests.HTTPError):
+        return exc.response is not None and exc.response.status_code >= 500
+    return isinstance(exc, requests.RequestException)
+
 
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type((requests.RequestException, ConnectionError)),
+    retry=retry_if_exception(_is_retryable),
     reraise=True,
 )
 def _post_to_telegram_with_retry(payload: dict, use_photo: bool = False) -> requests.Response:

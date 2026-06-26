@@ -10,10 +10,13 @@ import sentry_sdk
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.database import opportunities_exist, bulk_save_opportunities
+from app.http_client import make_session, sanitize as _sanitize
 
 _logger = logging.getLogger(__name__)
 
 def clean_url(url):
+    if not url:
+        return ""
     return re.sub(r'[\u2000-\u200F\u2028-\u202F\u205F-\u206F\uFEFF]', '', url).strip()
 
 BASE_URL = "https://opportunitydesk.org"
@@ -39,6 +42,8 @@ def safe_get(session, url, max_retries=5):
     for i in range(max_retries):
         try:
             response = session.get(url, headers=random_headers(), timeout=30)
+            if response.status_code < 500:
+                return response
             response.raise_for_status()
             return response
         except requests.exceptions.RequestException as e:
@@ -68,7 +73,7 @@ def extract_detail_info(session, detail_url):
 
         strong_tag = p.find("strong")
         if strong_tag and "deadline:" in strong_tag.get_text(strip=True).lower():
-            match = re.search(r"deadline:\s*(.*)", strong_tag.get_text(strip=True), re.IGNORECASE)
+            match = re.search(r"deadline:\s*(.*)", p.get_text(strip=True), re.IGNORECASE)
             if match:
                 deadline = match.group(1).strip()
 
@@ -82,9 +87,16 @@ def extract_detail_info(session, detail_url):
     if content_div:
         paragraphs = content_div.find_all("p", recursive=False)
         if paragraphs:
-            raw_description = " ".join(p.get_text(strip=True) for p in paragraphs[:2])
-            raw_description = re.sub(r"^deadline:\s*[^.]*\.?\s*", "", raw_description, flags=re.IGNORECASE)
-            description = raw_description
+            desc_paragraphs = []
+            for p in paragraphs:
+                text = p.get_text(strip=True)
+                if re.match(r"deadline\s*:", text, re.IGNORECASE):
+                    continue
+                desc_paragraphs.append(text)
+                if len(desc_paragraphs) == 2:
+                    break
+            if desc_paragraphs:
+                description = " ".join(desc_paragraphs)
 
     categories = soup.find_all("a", rel="category tag")
     if categories:
@@ -110,21 +122,26 @@ def clean_deadline(deadline_str):
             return match.group(1)
     return deadline_str
 
-def _fetch_article(session, article):
+def _fetch_article(article):
     """Process a single article: fetch detail, clean, return opportunity dict or None."""
     title_link = article.find("a", string=True, href=True)
     if not title_link:
         return None
     title = title_link.get_text(strip=True)
     detail_url = title_link['href']
+    session = make_session()
     try:
         link, deadline, thumbnail, description, tags = extract_detail_info(session, detail_url)
     except Exception:
         print(f"[ERR] Failed to fetch detail for: {title}")
         return None
+    finally:
+        session.close()
     link = clean_url(link)
-    if not link or link.startswith(BASE_URL):
+    if not link:
         return None
+    if link.startswith("/"):
+        link = BASE_URL.rstrip("/") + link
     cleaned_deadline = clean_deadline(deadline)
     return {
         "title": title,
@@ -142,11 +159,10 @@ def fetch_opportunities_by_date(target_date=None):
     if not target_date:
         target_date = (datetime.now() - timedelta(days=1)).strftime("%Y/%m/%d")
 
-    session = requests.Session()
     url = f"{BASE_URL}/{target_date}/"
     print(f"\n[Fetch] {url}")
 
-    page_response = safe_get(session, url)
+    page_response = safe_get(make_session(), url)
     if not page_response:
         print(f"[ERR] Could not fetch {url}")
         return []
@@ -158,7 +174,7 @@ def fetch_opportunities_by_date(target_date=None):
     # Phase 1: fetch all detail pages in parallel
     candidates = []
     with ThreadPoolExecutor(max_workers=MAX_DETAIL_WORKERS) as pool:
-        futures = {pool.submit(_fetch_article, session, a): a for a in articles}
+        futures = {pool.submit(_fetch_article, a): a for a in articles}
         for future in as_completed(futures):
             opp = future.result()
             if opp:
@@ -175,7 +191,9 @@ def fetch_opportunities_by_date(target_date=None):
     if batch:
         saved = bulk_save_opportunities(batch, scraped_date=target_date)
         print(f"[Batch] Saved {saved}/{len(batch)} opportunities (skipped {len(candidates) - len(batch)} existing)")
-        return batch[:saved]
+        if saved == len(batch):
+            return batch
+        return []
     return []
 
 def fetch_opportunities_by_date_safe(target_date=None):

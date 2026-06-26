@@ -9,6 +9,7 @@ from threading import Thread
 from typing import Optional
 from datetime import datetime, timedelta
 
+from app.scheduler import reload_schedules
 from app.scraper import fetch_opportunities_by_date
 from app.database import (
     get_admins,
@@ -44,25 +45,11 @@ from app.keyboards import (
     build_month_picker, build_day_picker, build_search_keyboard,
     build_stats_keyboard, build_browse_keyboard,
 )
-import requests
-from requests.adapters import HTTPAdapter
 import sentry_sdk
-
-class _TimeoutAdapter(HTTPAdapter):
-    def __init__(self, timeout=15, *args, **kwargs):
-        self.timeout = timeout
-        super().__init__(*args, **kwargs)
-    def send(self, request, **kwargs):
-        kwargs.setdefault('timeout', self.timeout)
-        return super().send(request, **kwargs)
-
-_http = requests.Session()
-_http.mount('https://', _TimeoutAdapter(timeout=15))
-_http.mount('http://', _TimeoutAdapter(timeout=15))
+from app.http_client import http as _http, sanitize as _sanitize
+from app.rate_limiter import telegram_limiter
 
 logger = logging.getLogger(__name__)
-def _sanitize(msg: str) -> str:
-    return re.sub(r'bot\d+:[\w-]+', 'bot***REDACTED***', str(msg))
 
 # Lazy-loaded bot info (from getMe)
 BOT_USERNAME: str | None = None
@@ -132,7 +119,7 @@ def _scrape_only(today, chat_id, message_id):
         else:
             _http.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload)
     except Exception:
-        pass
+        logger.warning("Failed to send scrape result to Telegram (chat_id=%s)", chat_id, exc_info=True)
 
 
 def process_telegram_update(data, run_in_background=None):
@@ -994,7 +981,7 @@ def process_telegram_update(data, run_in_background=None):
                             "parse_mode": "HTML"
                         })
                     except Exception:
-                        pass
+                        logger.warning("Failed to send error message to Telegram (chat_id=%s)", chat_id, exc_info=True)
             if run_in_background:
                 run_in_background(_scrape_date_only)
             else:
@@ -1014,10 +1001,11 @@ def process_telegram_update(data, run_in_background=None):
                 sent = 0
                 with ThreadPoolExecutor(max_workers=3) as pool:
                     futures = {}
-                    for i, op in enumerate(date_ops):
+                    for op in date_ops:
+                        wait = telegram_limiter.consume()
+                        if wait > 0:
+                            time.sleep(wait)
                         futures[pool.submit(post_to_telegram, op)] = op
-                        if i > 0 and i % 3 == 0:
-                            time.sleep(0.5)
                     for future in as_completed(futures):
                         if future.result():
                             sent += 1
@@ -1042,10 +1030,11 @@ def process_telegram_update(data, run_in_background=None):
                 sent = 0
                 with ThreadPoolExecutor(max_workers=3) as pool:
                     futures = {}
-                    for i, op in enumerate(all_unposted):
+                    for op in all_unposted:
+                        wait = telegram_limiter.consume()
+                        if wait > 0:
+                            time.sleep(wait)
                         futures[pool.submit(post_to_telegram, op)] = op
-                        if i > 0 and i % 3 == 0:
-                            time.sleep(0.5)
                     for future in as_completed(futures):
                         if future.result():
                             sent += 1

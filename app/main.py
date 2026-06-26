@@ -4,6 +4,7 @@ import io
 import asyncio
 import time
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, BackgroundTasks, Query
 from threading import Thread
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,7 +24,6 @@ from app.database import (
     delete_opportunity,
     search_opportunities,
     opportunity_to_dict,
-    SessionLocal,
     Opportunity,
     Admin,
     add_admin,
@@ -35,49 +35,81 @@ from app.schemas import (
     SearchResultOut, StatsOut, AdminOut, AdminCreate,
     RootOut, RunOnceOut, WebhookOut,
 )
-import sentry_sdk
-from app.config import TELEGRAM_API_URL, BOT_OWNER_ID, PUBLIC_URL, USE_POLLING, RUN_SCHEDULER, API_KEY, SENTRY_DSN
+from app.config import TELEGRAM_API_URL, BOT_OWNER_ID, PUBLIC_URL, USE_POLLING, RUN_SCHEDULER, API_KEY, SENTRY_DSN, TELEGRAM_CHANNEL_ID, TELEGRAM_CHANNEL_ID
 
 if SENTRY_DSN:
     try:
+        import sentry_sdk
         sentry_sdk.init(
             dsn=SENTRY_DSN,
             traces_sample_rate=0.1,
-            send_default_pii=True,
+            send_default_pii=False,
             environment="production" if PUBLIC_URL else "development",
         )
+    except Exception as e:
+        logging.warning("Sentry initialization failed (non-fatal): %s", e)
+
+from app.http_client import http as _http, sanitize as _sanitize
+from app.rate_limiter import api_limiter
+from app.telegram_handlers import process_telegram_update, set_bot_info
+
+@asynccontextmanager
+async def lifespan(app):
+    try:
+        init_db()
+    except Exception as e:
+        logging.warning("DB init failed (will retry on next restart): %s", e)
+    if not TELEGRAM_CHANNEL_ID:
+        logging.warning("TELEGRAM_CHANNEL_ID not set — posting to Telegram will fail")
+    try:
+        me = _http.post(f"{TELEGRAM_API_URL}/getMe").json().get("result", {})
+        set_bot_info(me.get("username"), me.get("first_name", "Opportunity Search Bot"))
     except Exception:
-        pass  # Sentry is optional — never block startup
+        logging.warning("Failed to get bot info from Telegram (non-fatal)")
+    primary = os.getenv("PRIMARY_WORKER", "true").lower() == "true"
+    if primary:
+        try:
+            set_webhook()
+        except Exception as e:
+            logging.warning(_sanitize(f"Webhook setup failed (non-fatal): {e}"))
+        if USE_POLLING:
+            Thread(target=start_polling, daemon=True).start()
+        if RUN_SCHEDULER:
+            Thread(target=start_scheduler, daemon=True).start()
+            print("[OK] Scheduler started (primary worker)")
+    else:
+        print("[OK] Secondary worker (no scheduler/webhook)")
+    if os.getenv("RENDER"):
+        def _keepalive():
+            while True:
+                time.sleep(300)
+                try:
+                    resp = _http.get(f"http://localhost:{os.getenv('PORT', '8000')}/ping", timeout=10)
+                    resp.content
+                except Exception:
+                    pass
+        Thread(target=_keepalive, daemon=True).start()
+    yield
+    print("[Shutdown] Closing database connections...")
+    engine.dispose()
+    print("[Shutdown] Done.")
 
-# --- Reusable HTTP session (connection pool => way faster) ---
-from requests.adapters import HTTPAdapter
-
-class _TimeoutAdapter(HTTPAdapter):
-    def __init__(self, timeout=15, *args, **kwargs):
-        self.timeout = timeout
-        super().__init__(*args, **kwargs)
-    def send(self, request, **kwargs):
-        kwargs.setdefault("timeout", self.timeout)
-        return super().send(request, **kwargs)
-
-_http = requests.Session()
-_http.mount("https://", _TimeoutAdapter(timeout=15))
-_http.mount("http://", _TimeoutAdapter(timeout=15))
-
-from app.telegram_handlers import process_telegram_update, _sanitize, set_bot_info
 
 app = FastAPI(
     title="Opportunity Search API",
     description="Searches for opportunities (scholarships, grants, fellowships), stores them, and posts new ones to a Telegram channel.",
     version="1.0.0",
     contact={"name": "Mecha T.", "url": "https://twolama.me"},
+    lifespan=lifespan,
 )
 
 # API Key auth dependency for write endpoints
 from fastapi import Header, HTTPException, Depends
 
 async def verify_api_key(x_api_key: str = Header(default="", alias="X-API-Key")):
-    if API_KEY and x_api_key != API_KEY:
+    if not API_KEY:
+        raise HTTPException(status_code=500, detail="API_KEY not configured on server")
+    if x_api_key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid or missing API key")
     return x_api_key
 
@@ -86,8 +118,12 @@ async def verify_api_key(x_api_key: str = Header(default="", alias="X-API-Key"))
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
     loop = asyncio.get_running_loop()
+
+    def _thread_safe_add_task(coro):
+        loop.call_soon_threadsafe(background_tasks.add_task, coro)
+
     try:
-        await loop.run_in_executor(None, process_telegram_update, data, background_tasks.add_task)
+        await loop.run_in_executor(None, process_telegram_update, data, _thread_safe_add_task)
     except Exception as e:
         logging.warning(_sanitize(f"Webhook processing error: {e}"))
     return {"ok": True}
@@ -100,6 +136,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    if os.getenv("TESTING", "").lower() == "true":
+        return await call_next(request)
+    if request.url.path not in ("/ping", "/", "/docs", "/openapi.json"):
+        ip = request.client.host if request.client else "unknown"
+        wait = api_limiter.consume(ip)
+        if wait > 0:
+            from fastapi.responses import JSONResponse
+            logging.warning("Rate limit hit for %s on %s", ip, request.url.path)
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests"},
+                headers={"Retry-After": str(int(wait))},
+            )
+    return await call_next(request)
 
 def set_webhook():
     use_polling = os.getenv("USE_POLLING", "true").lower() == "true"
@@ -144,49 +198,6 @@ def start_polling():
             time.sleep(backoff)
             backoff = min(backoff * 2, max_backoff)
 
-@app.on_event("startup")
-def on_startup():
-    """Initialize database tables and start the background scheduler."""
-    try:
-        init_db()
-    except Exception as e:
-        logging.warning(f"DB init failed (will retry on next restart): {e}")
-    try:
-        me = _http.post(f"{TELEGRAM_API_URL}/getMe").json().get("result", {})
-        set_bot_info(me.get("username"), me.get("first_name", "Opportunity Search Bot"))
-    except Exception:
-        pass
-    primary = os.getenv("PRIMARY_WORKER", "true").lower() == "true"
-    if primary:
-        try:
-            set_webhook()
-        except Exception as e:
-            logging.warning(_sanitize(f"Webhook setup failed (non-fatal): {e}"))
-        if os.getenv("USE_POLLING", "true").lower() == "true":
-            Thread(target=start_polling, daemon=True).start()
-        if os.getenv("RUN_SCHEDULER", "true").lower() == "true":
-            Thread(target=start_scheduler, daemon=True).start()
-            print("[OK] Scheduler started (primary worker)")
-    else:
-        print("[OK] Secondary worker (no scheduler/webhook)")
-    # Self-keepalive: ping every 5min so Render doesn't sleep the service
-    if os.getenv("RENDER"):
-        def _keepalive():
-            while True:
-                time.sleep(300)
-                try:
-                    _http.get(f"http://localhost:{os.getenv('PORT', '8000')}/ping", timeout=10)
-                except Exception:
-                    pass
-        Thread(target=_keepalive, daemon=True).start()
-
-@app.on_event("shutdown")
-def on_shutdown():
-    """Gracefully close DB connections on shutdown."""
-    print("[Shutdown] Closing database connections...")
-    engine.dispose()
-    print("[Shutdown] Done.")
-
 @app.get("/", tags=["Health"], summary="Root welcome message", response_model=RootOut)
 async def root():
     """Returns a simple welcome message."""
@@ -197,20 +208,23 @@ async def ping():
     """Checks app, DB, and Telegram API connectivity."""
     checks = {"app": "ok"}
     try:
-        db = SessionLocal()
-        db.execute(Opportunity.__table__.select().limit(1))
-        db.close()
+        from app.db import get_session
+        with get_session() as db:
+            db.execute(Opportunity.__table__.select().limit(1))
         checks["db"] = "ok"
     except Exception as e:
         checks["db"] = f"error: {e}"
+        logging.warning("Healthcheck DB failure: %s", e)
     try:
         tg = _http.get(f"{TELEGRAM_API_URL}/getMe", timeout=5)
         if tg.ok:
             checks["telegram"] = "ok"
         else:
             checks["telegram"] = f"error: {tg.status_code}"
+            logging.warning("Healthcheck Telegram failure: %s", tg.status_code)
     except Exception as e:
         checks["telegram"] = f"error: {e}"
+        logging.warning("Healthcheck Telegram error: %s", e)
     all_ok = all(v == "ok" for v in checks.values())
     if not all_ok:
         from fastapi import HTTPException
@@ -258,6 +272,22 @@ async def export_opportunities(
     output.seek(0)
     return StreamingResponse(output, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=opportunities.csv"})
 
+@app.get("/opportunities/unposted", tags=["Opportunities"], summary="List unposted opportunities", response_model=list[OpportunityOut])
+async def get_unposted():
+    """Returns opportunities that have not yet been sent to Telegram."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, get_unposted_opportunities)
+
+@app.get("/opportunities/posted", tags=["Opportunities"], summary="List posted opportunities", response_model=list[OpportunityOut])
+async def get_posted():
+    def fetch_posted():
+        from app.db import get_session
+        with get_session() as db:
+            results = db.query(Opportunity).filter_by(posted_to_telegram=True).all()
+            return [opportunity_to_dict(opp) for opp in results]
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, fetch_posted)
+
 @app.get("/opportunities/{opportunity_id}", tags=["Opportunities"], summary="Get an opportunity by ID", response_model=OpportunityOut)
 async def get_opportunity(opportunity_id: int):
     """Returns a single opportunity by its ID."""
@@ -271,7 +301,7 @@ async def get_opportunity(opportunity_id: int):
 @app.post("/opportunities", tags=["Opportunities"], summary="Create an opportunity", response_model=OpportunityOut, status_code=201, dependencies=[Depends(verify_api_key)])
 async def create_opportunity(body: OpportunityCreate):
     """Create a new opportunity manually."""
-    from app.database import save_opportunity, SessionLocal, Opportunity
+    from app.database import save_opportunity, get_opportunity_by_id
     data = {
         "title": body.title,
         "link": body.link,
@@ -281,41 +311,16 @@ async def create_opportunity(body: OpportunityCreate):
         "tags": body.tags or [],
     }
     def _create():
-        ok = save_opportunity(data, scraped_date=body.created_at)
-        if not ok:
+        opp_id = save_opportunity(data, scraped_date=body.created_at)
+        if opp_id is None:
             return None
-        db = SessionLocal()
-        try:
-            opp = db.query(Opportunity).filter_by(title=data["title"], link=data["link"]).order_by(Opportunity.id.desc()).first()
-            if opp:
-                return opportunity_to_dict(opp)
-            return None
-        finally:
-            db.close()
+        return get_opportunity_by_id(opp_id)
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, _create)
     if result is None:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Failed to create opportunity (may be duplicate)")
     return result
-
-@app.get("/opportunities/unposted", tags=["Opportunities"], summary="List unposted opportunities", response_model=list[OpportunityOut])
-async def get_unposted():
-    """Returns opportunities that have not yet been sent to Telegram."""
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, get_unposted_opportunities)
-
-@app.get("/opportunities/posted", tags=["Opportunities"], summary="List posted opportunities", response_model=list[OpportunityOut])
-async def get_posted():
-    def fetch_posted():
-        db = SessionLocal()
-        try:
-            results = db.query(Opportunity).filter_by(posted_to_telegram=True).all()
-            return [opportunity_to_dict(opp) for opp in results]
-        finally:
-            db.close()
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, fetch_posted)
 
 # ✅ Optional: Trigger the task manually (for testing via browser)
 @app.get("/run-once", tags=["Management"], summary="Trigger daily tasks manually", response_model=RunOnceOut)
@@ -360,12 +365,18 @@ async def bulk_delete_opportunities(
 ):
     """Delete opportunities matching filters. At least one filter is required."""
     from app.database import delete_old_entries
+    from app.db import get_session
     def _bulk_delete():
-        db = SessionLocal()
-        try:
+        with get_session() as db:
             q = db.query(Opportunity)
             if ids:
-                id_list = [int(i.strip()) for i in ids.split(",") if i.strip().isdigit()]
+                id_list = []
+                for part in ids.split(","):
+                    item = part.strip()
+                    if item.isdigit():
+                        id_list.append(int(item))
+                    else:
+                        logging.warning("Skipping invalid ID in bulk_delete: %s", _sanitize(item))
                 q = q.filter(Opportunity.id.in_(id_list))
             if older_than_days:
                 cutoff = datetime.utcnow() - timedelta(days=older_than_days)
@@ -375,13 +386,8 @@ async def bulk_delete_opportunities(
                 if posted_bool is not None:
                     q = q.filter(Opportunity.posted_to_telegram == posted_bool)
             deleted = q.delete(synchronize_session=False)
-            db.commit()
             return deleted
-        except Exception:
-            db.rollback()
-            return 0
-        finally:
-            db.close()
+
     if not ids and not older_than_days and posted is None:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Provide at least one filter: ids, older_than_days, or posted")
@@ -415,20 +421,14 @@ async def post_opportunity(opportunity_id: int):
 @app.post("/opportunities/{opportunity_id}/unpost", tags=["Opportunities"], summary="Mark as unposted", dependencies=[Depends(verify_api_key)])
 async def unpost_opportunity(opportunity_id: int):
     """Reset posted_to_telegram to False for an opportunity."""
+    from app.db import get_session
     def _unpost():
-        db = SessionLocal()
-        try:
+        with get_session() as db:
             opp = db.query(Opportunity).filter_by(id=opportunity_id).first()
             if not opp:
                 return False
             opp.posted_to_telegram = False
-            db.commit()
             return True
-        except Exception:
-            db.rollback()
-            return False
-        finally:
-            db.close()
     loop = asyncio.get_running_loop()
     ok = await loop.run_in_executor(None, _unpost)
     if not ok:
@@ -453,14 +453,12 @@ async def create_admin(body: AdminCreate):
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Admin already exists or failed to create")
     def _fetch_admin():
-        db = SessionLocal()
-        try:
+        from app.db import get_session
+        with get_session() as db:
             a = db.query(Admin).filter_by(user_id=body.user_id).first()
             if a:
                 return {"user_id": a.user_id, "name": a.name, "added_by": a.added_by, "created_at": a.created_at}
             return None
-        finally:
-            db.close()
     result = await loop.run_in_executor(None, _fetch_admin)
     return result
 

@@ -1,42 +1,18 @@
+import logging
 from datetime import datetime, timedelta
 from os import getenv
 from typing import List, Optional
 import re
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text, Boolean, DateTime, and_, text, func, Index, case
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import Column, Integer, BigInteger, String, Text, Boolean, DateTime, func, Index, case
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.exc import IntegrityError
-from dotenv import load_dotenv
 
-load_dotenv()  # loads env vars from .env file
+from app.db import engine, SessionLocal, get_session
 
-# Load DB connection from env
-DATABASE_URL = getenv("DATABASE_URL")
-
-# Build connect args
-_connect_args = {"keepalives_idle": 60, "keepalives_interval": 10, "keepalives_count": 5}
-
-# Supabase / cloud Postgres requires SSL
-if DATABASE_URL and ("supabase" in DATABASE_URL.lower() or getenv("DB_SSL", "false").lower() == "true"):
-    _connect_args["sslmode"] = "require"
-
-# Create engine & session factory
-_is_sqlite = DATABASE_URL and DATABASE_URL.startswith("sqlite")
-if _is_sqlite:
-    engine = create_engine(DATABASE_URL, echo=False, future=True)
-else:
-    engine = create_engine(
-        DATABASE_URL,
-        echo=False,
-        future=True,
-        pool_pre_ping=True,
-        pool_recycle=300,
-        pool_size=int(getenv("DB_POOL_SIZE", "5")),
-        max_overflow=int(getenv("DB_MAX_OVERFLOW", "5")),
-        connect_args=_connect_args,
-    )
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+_logger = logging.getLogger(__name__)
 
 Base = declarative_base()
+
 
 class Opportunity(Base):
     __tablename__ = "opportunities"
@@ -52,9 +28,10 @@ class Opportunity(Base):
     posted_to_telegram = Column(Boolean, default=False)
 
     __table_args__ = (
-        Index("idx_posted_to_telegram", "posted_to_telegram"),
-        Index("idx_created_at", "created_at"),
+        Index("idx_posted_created", "posted_to_telegram", "created_at"),
+        Index("idx_tags", "tags"),
     )
+
 
 class Admin(Base):
     __tablename__ = "bot_admins"
@@ -64,13 +41,15 @@ class Admin(Base):
     added_by = Column(BigInteger, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
 class ScheduleTime(Base):
     __tablename__ = "schedule_times"
 
     id = Column(Integer, primary_key=True, index=True)
-    time_str = Column(String(5), nullable=False)  # "HH:MM" in UTC
-    schedule_type = Column(String(10), nullable=False, default="scrape")  # "scrape" or "post"
+    time_str = Column(String(5), nullable=False)
+    schedule_type = Column(String(10), nullable=False, default="scrape")
     created_at = Column(DateTime, default=datetime.utcnow)
+
 
 class PendingAdmin(Base):
     __tablename__ = "pending_admins"
@@ -78,6 +57,7 @@ class PendingAdmin(Base):
     user_id = Column(BigInteger, primary_key=True)
     name = Column(String, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
+
 
 class InviteToken(Base):
     __tablename__ = "invite_tokens"
@@ -87,61 +67,55 @@ class InviteToken(Base):
     used = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
 class PendingScheduleInput(Base):
     __tablename__ = "pending_schedule_input"
 
     user_id = Column(BigInteger, primary_key=True)
-    input_type = Column(String(10), nullable=False)  # "scrape" or "post"
+    input_type = Column(String(10), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
 def get_schedule_times(schedule_type: str = "scrape") -> list[str]:
-    db = SessionLocal()
-    try:
+    with get_session() as db:
         rows = db.query(ScheduleTime).filter(ScheduleTime.schedule_type == schedule_type).order_by(ScheduleTime.time_str).all()
         return [r.time_str for r in rows]
-    finally:
-        db.close()
+
 
 def add_schedule_time(time_str: str, schedule_type: str = "scrape") -> bool:
-    db = SessionLocal()
     try:
-        existing = db.query(ScheduleTime).filter(
-            ScheduleTime.time_str == time_str,
-            ScheduleTime.schedule_type == schedule_type
-        ).first()
-        if existing:
-            return False
-        db.add(ScheduleTime(time_str=time_str, schedule_type=schedule_type))
-        db.commit()
-        return True
+        with get_session() as db:
+            existing = db.query(ScheduleTime).filter(
+                ScheduleTime.time_str == time_str,
+                ScheduleTime.schedule_type == schedule_type
+            ).first()
+            if existing:
+                return False
+            db.add(ScheduleTime(time_str=time_str, schedule_type=schedule_type))
+            return True
     except IntegrityError:
-        db.rollback()
         return False
-    finally:
-        db.close()
+
 
 def remove_schedule_time(time_str: str, schedule_type: str = "scrape") -> bool:
-    db = SessionLocal()
     try:
-        row = db.query(ScheduleTime).filter(
-            ScheduleTime.time_str == time_str,
-            ScheduleTime.schedule_type == schedule_type
-        ).first()
-        if not row:
-            return False
-        db.delete(row)
-        db.commit()
-        return True
+        with get_session() as db:
+            row = db.query(ScheduleTime).filter(
+                ScheduleTime.time_str == time_str,
+                ScheduleTime.schedule_type == schedule_type
+            ).first()
+            if not row:
+                return False
+            db.delete(row)
+            return True
     except Exception:
-        db.rollback()
         return False
-    finally:
-        db.close()
+
 
 _TIME_RE = re.compile(r'^(\d{1,2}):(\d{2})(?:\s*([ap]\.?m\.?))?$', re.IGNORECASE)
 
+
 def parse_time_12h(text: str) -> str | None:
-    """Convert '6:30 AM' or '06:30' (24h) to '06:30' (24h UTC). Returns None if invalid."""
     m = _TIME_RE.match(text.strip())
     if not m:
         return None
@@ -159,8 +133,8 @@ def parse_time_12h(text: str) -> str | None:
             return None
     return f"{hour:02d}:{minute}"
 
+
 def format_time_12h(time_str: str) -> str:
-    """Convert '16:59' to '4:59 PM'."""
     try:
         h, m = map(int, time_str.split(":"))
         ampm = "AM" if h < 12 else "PM"
@@ -171,160 +145,123 @@ def format_time_12h(time_str: str) -> str:
     except Exception:
         return time_str
 
-# ---- Pending admin requests (multi-worker safe) ----
 
 def add_pending_admin(user_id: int, name: str) -> bool:
-    db = SessionLocal()
     try:
-        existing = db.query(PendingAdmin).filter(PendingAdmin.user_id == user_id).first()
-        if existing:
-            return False
-        db.add(PendingAdmin(user_id=user_id, name=name))
-        db.commit()
-        return True
+        with get_session() as db:
+            existing = db.query(PendingAdmin).filter(PendingAdmin.user_id == user_id).first()
+            if existing:
+                return False
+            db.add(PendingAdmin(user_id=user_id, name=name))
+            return True
     except IntegrityError:
-        db.rollback()
         return False
-    finally:
-        db.close()
+
 
 def remove_pending_admin(user_id: int) -> str | None:
-    db = SessionLocal()
     try:
-        row = db.query(PendingAdmin).filter(PendingAdmin.user_id == user_id).first()
-        if not row:
-            return None
-        name = row.name
-        db.delete(row)
-        db.commit()
-        return name
+        with get_session() as db:
+            row = db.query(PendingAdmin).filter(PendingAdmin.user_id == user_id).first()
+            if not row:
+                return None
+            name = row.name
+            db.delete(row)
+            return name
     except Exception:
-        db.rollback()
         return None
-    finally:
-        db.close()
+
 
 def get_pending_admins() -> list[dict]:
-    db = SessionLocal()
-    try:
+    with get_session() as db:
         rows = db.query(PendingAdmin).order_by(PendingAdmin.created_at).all()
         return [{"user_id": r.user_id, "name": r.name} for r in rows]
-    finally:
-        db.close()
 
-# ---- Invite tokens (multi-worker safe) ----
 
 def add_invite_token(token: str, owner_id: int) -> bool:
-    db = SessionLocal()
     try:
-        db.add(InviteToken(token=token, owner_id=owner_id))
-        db.commit()
-        return True
+        with get_session() as db:
+            db.add(InviteToken(token=token, owner_id=owner_id))
+            return True
     except IntegrityError:
-        db.rollback()
         return False
-    finally:
-        db.close()
+
 
 def consume_invite_token(token: str) -> int | None:
-    """Mark a token as used and return the owner_id. Returns None if invalid/used/expired."""
-    db = SessionLocal()
     try:
-        row = db.query(InviteToken).filter(
-            InviteToken.token == token,
-            InviteToken.used == False,
-        ).first()
-        if not row:
-            return None
-        now = datetime.utcnow()
-        age = now - row.created_at
-        if age.total_seconds() > 86400:  # 24h TTL
-            row.used = True  # mark expired so it can't be used later
-            db.commit()
-            return None
-        row.used = True
-        db.commit()
-        return row.owner_id
+        with get_session() as db:
+            row = db.query(InviteToken).filter(
+                InviteToken.token == token,
+                InviteToken.used == False,
+            ).first()
+            if not row:
+                return None
+            now = datetime.utcnow()
+            age = now - row.created_at
+            if age.total_seconds() > 86400:
+                row.used = True
+                return None
+            row.used = True
+            return row.owner_id
     except Exception:
-        db.rollback()
         return None
-    finally:
-        db.close()
 
-# ---- Pending schedule input (multi-worker safe) ----
 
 def set_pending_schedule_input(user_id: int, input_type: str) -> None:
-    db = SessionLocal()
     try:
-        existing = db.query(PendingScheduleInput).filter(PendingScheduleInput.user_id == user_id).first()
-        if existing:
-            existing.input_type = input_type
-        else:
-            db.add(PendingScheduleInput(user_id=user_id, input_type=input_type))
-        db.commit()
+        with get_session() as db:
+            existing = db.query(PendingScheduleInput).filter(PendingScheduleInput.user_id == user_id).first()
+            if existing:
+                existing.input_type = input_type
+            else:
+                db.add(PendingScheduleInput(user_id=user_id, input_type=input_type))
     except Exception:
-        db.rollback()
-    finally:
-        db.close()
+        _logger.warning("Failed to set pending schedule input for user %s", user_id, exc_info=True)
+
 
 def pop_pending_schedule_input(user_id: int) -> str | None:
-    db = SessionLocal()
     try:
-        row = db.query(PendingScheduleInput).filter(PendingScheduleInput.user_id == user_id).first()
-        if not row:
-            return None
-        input_type = row.input_type
-        db.delete(row)
-        db.commit()
-        return input_type
+        with get_session() as db:
+            row = db.query(PendingScheduleInput).filter(PendingScheduleInput.user_id == user_id).first()
+            if not row:
+                return None
+            input_type = row.input_type
+            db.delete(row)
+            return input_type
     except Exception:
-        db.rollback()
         return None
-    finally:
-        db.close()
+
 
 def init_db():
-    """Create tables and run pending Alembic migrations."""
-    # Create tables defined by ORM models (idempotent; does not alter existing)
     Base.metadata.create_all(bind=engine)
-    # Run Alembic migrations for schema changes not captured by create_all
     _run_alembic_migrations()
-    # Ensure BOT_OWNER_ID is always an admin
     owner_id = getenv("BOT_OWNER_ID")
     if owner_id:
         try:
-            db = SessionLocal()
-            owner = int(owner_id)
-            existing = db.query(Admin).filter(Admin.user_id == owner).first()
-            if not existing:
-                db.add(Admin(user_id=owner, name="Owner", added_by=owner))
-                db.commit()
-                print(f"[Admin] Owner {owner} registered as admin")
+            with get_session() as db:
+                owner = int(owner_id)
+                existing = db.query(Admin).filter(Admin.user_id == owner).first()
+                if not existing:
+                    db.add(Admin(user_id=owner, name="Owner", added_by=owner))
+                    print(f"[Admin] Owner {owner} registered as admin")
         except Exception:
-            pass
-        finally:
-            db.close()
-    # Seed default schedule times if table is empty
+            _logger.warning("Failed to register owner as admin", exc_info=True)
     try:
-        db = SessionLocal()
-        scrape_count = db.query(ScheduleTime).filter(ScheduleTime.schedule_type == "scrape").count()
-        post_count = db.query(ScheduleTime).filter(ScheduleTime.schedule_type == "post").count()
-        if scrape_count == 0:
-            for t in ["04:59", "10:59", "16:59"]:
-                db.add(ScheduleTime(time_str=t, schedule_type="scrape"))
-            print(f"[DB] Seeded default scrape times")
-        if post_count == 0:
-            for t in ["08:00", "14:00", "20:00"]:
-                db.add(ScheduleTime(time_str=t, schedule_type="post"))
-            print(f"[DB] Seeded default post times")
-        db.commit()
+        with get_session() as db:
+            scrape_count = db.query(ScheduleTime).filter(ScheduleTime.schedule_type == "scrape").count()
+            post_count = db.query(ScheduleTime).filter(ScheduleTime.schedule_type == "post").count()
+            if scrape_count == 0:
+                for t in ["04:59", "10:59", "16:59"]:
+                    db.add(ScheduleTime(time_str=t, schedule_type="scrape"))
+                print(f"[DB] Seeded default scrape times")
+            if post_count == 0:
+                for t in ["08:00", "14:00", "20:00"]:
+                    db.add(ScheduleTime(time_str=t, schedule_type="post"))
+                print(f"[DB] Seeded default post times")
     except Exception:
-        pass
-    finally:
-        db.close()
+        _logger.warning("Failed to seed default schedule times", exc_info=True)
+
 
 def _run_alembic_migrations():
-    """Run Alembic upgrades to head. Falls back to stamp if not yet stamped."""
     try:
         from alembic.config import Config as AlembicConfig
         from alembic import command as alembic_cmd
@@ -334,74 +271,58 @@ def _run_alembic_migrations():
             alembic_cfg = AlembicConfig(ini_path)
             alembic_cmd.upgrade(alembic_cfg, "head")
     except Exception:
-        pass  # Alembic is optional — never block startup
+        _logger.warning("Alembic migration failed (non-fatal)", exc_info=True)
+
 
 def is_admin(user_id: int) -> bool:
-    db = SessionLocal()
-    try:
+    with get_session() as db:
         return db.query(Admin).filter(Admin.user_id == user_id).first() is not None
-    finally:
-        db.close()
+
 
 def add_admin(user_id: int, added_by: int, name: str = "") -> bool:
-    db = SessionLocal()
     try:
-        existing = db.query(Admin).filter(Admin.user_id == user_id).first()
-        if existing:
-            if name and existing.name != name:
-                existing.name = name
-                db.commit()
-            return False
-        db.add(Admin(user_id=user_id, added_by=added_by, name=name))
-        db.commit()
-        return True
+        with get_session() as db:
+            existing = db.query(Admin).filter(Admin.user_id == user_id).first()
+            if existing:
+                if name and existing.name != name:
+                    existing.name = name
+                return False
+            db.add(Admin(user_id=user_id, added_by=added_by, name=name))
+            return True
     except IntegrityError:
-        db.rollback()
         return False
-    finally:
-        db.close()
+
 
 def remove_admin(user_id: int) -> bool:
-    db = SessionLocal()
     try:
-        admin = db.query(Admin).filter(Admin.user_id == user_id).first()
-        if not admin:
-            return False
-        db.delete(admin)
-        db.commit()
-        return True
+        with get_session() as db:
+            admin = db.query(Admin).filter(Admin.user_id == user_id).first()
+            if not admin:
+                return False
+            db.delete(admin)
+            return True
     except Exception:
-        db.rollback()
         return False
-    finally:
-        db.close()
+
 
 def get_admins() -> List[dict]:
-    db = SessionLocal()
-    try:
+    with get_session() as db:
         results = db.query(Admin).order_by(Admin.created_at).all()
         return [{"user_id": a.user_id, "name": a.name, "added_by": a.added_by, "created_at": a.created_at} for a in results]
-    finally:
-        db.close()
+
 
 def opportunity_exists(title: str, link: str) -> bool:
-    db = SessionLocal()
-    try:
+    with get_session() as db:
         return db.query(Opportunity).filter_by(link=link).first() is not None
-    finally:
-        db.close()
+
 
 def opportunities_exist(links: list[str]) -> set[str]:
-    """Batch-check which links already exist in the DB. Returns a set of existing links."""
-    db = SessionLocal()
-    try:
+    with get_session() as db:
         results = db.query(Opportunity.link).filter(Opportunity.link.in_(links)).all()
         return {r[0] for r in results}
-    finally:
-        db.close()
 
-def save_opportunity(opportunity: dict, scraped_date: Optional[str] = None) -> bool:
-    db = SessionLocal()
+
+def save_opportunity(opportunity: dict, scraped_date: Optional[str] = None) -> Optional[int]:
     if scraped_date:
         try:
             dt = datetime.strptime(scraped_date.replace("/", "-"), "%Y-%m-%d")
@@ -409,99 +330,84 @@ def save_opportunity(opportunity: dict, scraped_date: Optional[str] = None) -> b
             dt = datetime.utcnow()
     else:
         dt = datetime.utcnow()
-    opp = Opportunity(
-        title=opportunity['title'],
-        link=opportunity['link'],
-        description=opportunity.get('description', ''),
-        deadline=opportunity.get('deadline', ''),
-        thumbnail=opportunity.get('thumbnail', ''),
-        tags=', '.join(opportunity.get('tags', [])),
-        created_at=dt
-    )
     try:
-        db.add(opp)
-        db.commit()
-        return True
+        with get_session() as db:
+            opp = Opportunity(
+                title=opportunity['title'],
+                link=opportunity['link'],
+                description=opportunity.get('description', ''),
+                deadline=opportunity.get('deadline', ''),
+                thumbnail=opportunity.get('thumbnail', ''),
+                tags=', '.join(opportunity.get('tags', [])),
+                created_at=dt
+            )
+            db.add(opp)
+            db.flush()
+            opp_id = opp.id
+        return opp_id
     except IntegrityError:
-        db.rollback()
-        return False
-    finally:
-        db.close()
+        return None
+
 
 def update_posted_status(opportunity_id: int):
-    db = SessionLocal()
-    try:
+    with get_session() as db:
         db.query(Opportunity).filter_by(id=opportunity_id).update({"posted_to_telegram": True})
-        db.commit()
-    finally:
-        db.close()
+
 
 def get_opportunity_by_id(opportunity_id: int) -> Optional[dict]:
-    db = SessionLocal()
-    try:
+    with get_session() as db:
         opp = db.query(Opportunity).filter_by(id=opportunity_id).first()
         if opp:
             return opportunity_to_dict(opp)
         return None
-    finally:
-        db.close()
+
 
 def update_opportunity(opportunity_id: int, data: dict) -> bool:
-    db = SessionLocal()
     try:
-        opp = db.query(Opportunity).filter_by(id=opportunity_id).first()
-        if not opp:
-            return False
-        for key, val in data.items():
-            if hasattr(opp, key) and val is not None:
-                if key == "tags" and isinstance(val, list):
-                    setattr(opp, key, ", ".join(val))
-                elif key == "created_at" and isinstance(val, str):
-                    try:
-                        setattr(opp, key, datetime.strptime(val, "%Y-%m-%d"))
-                    except ValueError:
-                        pass
-                else:
-                    setattr(opp, key, val)
-        db.commit()
-        return True
+        with get_session() as db:
+            opp = db.query(Opportunity).filter_by(id=opportunity_id).first()
+            if not opp:
+                return False
+            for key, val in data.items():
+                if hasattr(opp, key) and val is not None:
+                    if key == "tags" and isinstance(val, list):
+                        setattr(opp, key, ", ".join(val))
+                    elif key == "created_at" and isinstance(val, str):
+                        try:
+                            setattr(opp, key, datetime.strptime(val, "%Y-%m-%d"))
+                        except ValueError:
+                            _logger.warning("Invalid date format for created_at: %s", val)
+                    else:
+                        setattr(opp, key, val)
+            return True
     except Exception:
-        db.rollback()
         return False
-    finally:
-        db.close()
+
 
 def delete_opportunity(opportunity_id: int) -> bool:
-    db = SessionLocal()
     try:
-        opp = db.query(Opportunity).filter_by(id=opportunity_id).first()
-        if not opp:
-            return False
-        db.delete(opp)
-        db.commit()
-        return True
+        with get_session() as db:
+            opp = db.query(Opportunity).filter_by(id=opportunity_id).first()
+            if not opp:
+                return False
+            db.delete(opp)
+            return True
     except Exception:
-        db.rollback()
         return False
-    finally:
-        db.close()
+
 
 def get_unposted_opportunities() -> List[dict]:
-    db = SessionLocal()
-    try:
+    with get_session() as db:
         results = db.query(Opportunity).filter_by(posted_to_telegram=False).all()
         return [opportunity_to_dict(opp, include_status=False) for opp in results]
-    finally:
-        db.close()
+
 
 def get_all_opportunities() -> List[dict]:
-    db = SessionLocal()
-    try:
+    with get_session() as db:
         results = db.query(Opportunity).order_by(Opportunity.created_at.desc()).all()
         print(f"Fetched {len(results)} opportunities from DB")
         return [opportunity_to_dict(opp) for opp in results]
-    finally:
-        db.close()
+
 
 def opportunity_to_dict(opp, include_status: bool = True) -> dict:
     d = {
@@ -518,13 +424,14 @@ def opportunity_to_dict(opp, include_status: bool = True) -> dict:
         d["posted_to_telegram"] = opp.posted_to_telegram
     return d
 
+
 def _date_range(date_str: str) -> tuple[datetime, datetime]:
     dt = datetime.strptime(date_str, "%Y-%m-%d")
     return dt, dt + timedelta(days=1)
 
+
 def get_unposted_by_date(date_str: str) -> List[dict]:
-    db = SessionLocal()
-    try:
+    with get_session() as db:
         start, end = _date_range(date_str)
         results = db.query(Opportunity).filter(
             Opportunity.posted_to_telegram == False,
@@ -532,12 +439,10 @@ def get_unposted_by_date(date_str: str) -> List[dict]:
             Opportunity.created_at < end,
         ).order_by(Opportunity.created_at.desc()).all()
         return [opportunity_to_dict(o) for o in results]
-    finally:
-        db.close()
+
 
 def get_posted_by_date(date_str: str) -> List[dict]:
-    db = SessionLocal()
-    try:
+    with get_session() as db:
         start, end = _date_range(date_str)
         results = db.query(Opportunity).filter(
             Opportunity.posted_to_telegram == True,
@@ -545,18 +450,15 @@ def get_posted_by_date(date_str: str) -> List[dict]:
             Opportunity.created_at < end,
         ).order_by(Opportunity.created_at.desc()).all()
         return [opportunity_to_dict(o) for o in results]
-    finally:
-        db.close()
+
 
 def get_stats_from_db() -> dict:
-    db = SessionLocal()
-    try:
+    with get_session() as db:
         now = datetime.utcnow()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         week_start = today_start - timedelta(days=today_start.weekday())
         month_start = today_start.replace(day=1)
 
-        # Query 1: total / posted / unposted in a single GROUP BY
         status_counts = dict(
             db.query(Opportunity.posted_to_telegram, func.count(Opportunity.id))
             .group_by(Opportunity.posted_to_telegram)
@@ -566,7 +468,6 @@ def get_stats_from_db() -> dict:
         unposted = status_counts.get(False, 0)
         total = posted + unposted
 
-        # Query 2: min/max and date-range counts in one pass
         row = db.query(
             func.min(Opportunity.created_at),
             func.max(Opportunity.created_at).filter(Opportunity.posted_to_telegram == True),
@@ -580,12 +481,12 @@ def get_stats_from_db() -> dict:
         week_count = row[3] or 0
         month_count = row[4] or 0
 
-        # Query 3: top 10 tags (tags are comma-separated text, so fetch all and count in Python)
         from collections import Counter
         tag_counter: Counter = Counter()
+        TAG_LIMIT = 10000
         all_tags = db.query(Opportunity.tags).filter(
             Opportunity.tags.isnot(None), Opportunity.tags != ""
-        ).all()
+        ).limit(TAG_LIMIT).all()
         for (tags_str,) in all_tags:
             for tag in tags_str.split(", "):
                 tag = tag.strip()
@@ -604,12 +505,10 @@ def get_stats_from_db() -> dict:
             "oldest": oldest.strftime("%Y-%m-%d") if oldest else "N/A",
             "top_tags": top_tags,
         }
-    finally:
-        db.close()
+
 
 def search_opportunities(keyword: str, skip: int = 0, limit: int = 10, posted: Optional[bool] = None) -> dict:
-    db = SessionLocal()
-    try:
+    with get_session() as db:
         q = db.query(Opportunity)
         if keyword:
             like = f"%{keyword}%"
@@ -628,12 +527,9 @@ def search_opportunities(keyword: str, skip: int = 0, limit: int = 10, posted: O
             "offset": skip,
             "limit": limit
         }
-    finally:
-        db.close()
+
 
 def bulk_save_opportunities(opportunities: list[dict], scraped_date: Optional[str] = None) -> int:
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-    db = SessionLocal()
     try:
         if scraped_date:
             try:
@@ -653,25 +549,24 @@ def bulk_save_opportunities(opportunities: list[dict], scraped_date: Optional[st
                 "tags": ', '.join(opp.get('tags', [])),
                 "created_at": dt,
             })
-        if rows:
-            stmt = pg_insert(Opportunity).values(rows)
-            stmt = stmt.on_conflict_do_nothing(index_elements=["link"])
-            result = db.execute(stmt)
-            db.commit()
-            return result.rowcount
-        return 0
+        if not rows:
+            return 0
+        existing_links = opportunities_exist([r["link"] for r in rows])
+        new_rows = [r for r in rows if r["link"] not in existing_links]
+        if not new_rows:
+            return 0
+        with get_session() as db:
+            db.execute(Opportunity.__table__.insert(), new_rows)
+        return len(new_rows)
     except Exception:
-        db.rollback()
         return 0
-    finally:
-        db.close()
 
-def delete_old_entries(days: Optional[int] = 30):
-    db = SessionLocal()
-    try:
+
+def delete_old_entries(days: Optional[int] = None):
+    from app.config import DELETE_OLDER_THAN_DAYS as _cfg_days
+    if days is None:
+        days = _cfg_days
+    with get_session() as db:
         cutoff_date = datetime.utcnow() - timedelta(days=days)
         deleted = db.query(Opportunity).filter(Opportunity.created_at < cutoff_date).delete()
-        db.commit()
         print(f"[Clean] Deleted {deleted} old opportunities (older than {days} days).")
-    finally:
-        db.close()

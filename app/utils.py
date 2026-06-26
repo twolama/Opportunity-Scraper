@@ -1,9 +1,14 @@
+import os
+import html
+
+
 def format_telegram_message(opportunity: dict) -> str:
-    title = f"<b>{opportunity['title']}</b>" if opportunity.get("title") else ""
-    description = opportunity.get("description", "")
-    deadline = f"\n\n<b>Deadline:</b> {opportunity['deadline']}" if opportunity.get("deadline") else ""
-    # apply_link = f'\n\n📨 <a href="{opportunity["link"]}"><b>Apply Now</b></a>' if opportunity.get("link") else ""
-    join_us = '\n\n✅ <a href="https://t.me/opportunityspots"><b>Join Us</b></a>'
-    tags = "\n\n#Opportunities #Scholarships #Grants #Education #Career @opportunityspots"
+    title = f"<b>{html.escape(opportunity['title'])}</b>" if opportunity.get("title") else ""
+    description = html.escape(opportunity.get("description", ""))
+    deadline = f"\n\n<b>Deadline:</b> {html.escape(opportunity['deadline'])}" if opportunity.get("deadline") else ""
+    join_us_url = os.getenv("JOIN_US_URL", "https://t.me/opportunityspots")
+    join_us = f'\n\n✅ <a href="{html.escape(join_us_url)}"><b>Join Us</b></a>'
+    tags_text = os.getenv("TAGS_TEXT", "#Opportunities #Scholarships #Grants #Education #Career @opportunityspots")
+    tags = f"\n\n{html.escape(tags_text)}"
 
     return f"{title}\n\n{description}{deadline}{join_us}{tags}"
