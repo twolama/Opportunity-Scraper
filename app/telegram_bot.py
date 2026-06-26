@@ -17,7 +17,19 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 
+from requests.adapters import HTTPAdapter
+
+class _TimeoutAdapter(HTTPAdapter):
+    def __init__(self, timeout=15, *args, **kwargs):
+        self.timeout = timeout
+        super().__init__(*args, **kwargs)
+    def send(self, request, **kwargs):
+        kwargs.setdefault("timeout", self.timeout)
+        return super().send(request, **kwargs)
+
 _http = requests.Session()
+_http.mount("https://", _TimeoutAdapter(timeout=15))
+_http.mount("http://", _TimeoutAdapter(timeout=15))
 _logger = logging.getLogger(__name__)
 
 def _sanitize(msg: str) -> str:
@@ -110,7 +122,7 @@ def post_to_telegram(opportunity: dict) -> bool:
             payload["photo"] = thumbnail
             payload["caption"] = caption
         else:
-            payload["text"] = message
+            payload["text"] = _close_html_tags(message[:4096])
 
         try:
             response = _post_to_telegram_with_retry(payload, use_photo=use_photo)
@@ -119,7 +131,7 @@ def post_to_telegram(opportunity: dict) -> bool:
                 _logger.warning(f"sendPhoto failed for '{opportunity['title']}', falling back to sendMessage")
                 payload.pop("photo", None)
                 payload.pop("caption", None)
-                payload["text"] = message
+                payload["text"] = _close_html_tags(message[:4096])
                 response = _post_to_telegram_with_retry(payload, use_photo=False)
             else:
                 raise

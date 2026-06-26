@@ -7,8 +7,9 @@ import random
 from datetime import datetime, timedelta
 import sys
 import sentry_sdk
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from app.database import opportunity_exists, bulk_save_opportunities
+from app.database import opportunities_exist, bulk_save_opportunities
 
 _logger = logging.getLogger(__name__)
 
@@ -92,7 +93,6 @@ def extract_detail_info(session, detail_url):
     if not more_info_link:
         more_info_link = detail_url
 
-    time.sleep(random.uniform(1, 2))
     return more_info_link, deadline, thumbnail_url, description, tags
 
 def clean_deadline(deadline_str):
@@ -110,12 +110,38 @@ def clean_deadline(deadline_str):
             return match.group(1)
     return deadline_str
 
+def _fetch_article(session, article):
+    """Process a single article: fetch detail, clean, return opportunity dict or None."""
+    title_link = article.find("a", string=True, href=True)
+    if not title_link:
+        return None
+    title = title_link.get_text(strip=True)
+    detail_url = title_link['href']
+    try:
+        link, deadline, thumbnail, description, tags = extract_detail_info(session, detail_url)
+    except Exception:
+        print(f"[ERR] Failed to fetch detail for: {title}")
+        return None
+    link = clean_url(link)
+    if not link or link.startswith(BASE_URL):
+        return None
+    cleaned_deadline = clean_deadline(deadline)
+    return {
+        "title": title,
+        "link": link,
+        "deadline": cleaned_deadline,
+        "thumbnail": thumbnail,
+        "description": description,
+        "tags": tags,
+    }
+
+MAX_DETAIL_WORKERS = 3
+
 def fetch_opportunities_by_date(target_date=None):
     """Fetch and save opportunities for given date (default: yesterday)"""
     if not target_date:
         target_date = (datetime.now() - timedelta(days=1)).strftime("%Y/%m/%d")
 
-    all_opportunities = []
     session = requests.Session()
     url = f"{BASE_URL}/{target_date}/"
     print(f"\n[Fetch] {url}")
@@ -129,47 +155,26 @@ def fetch_opportunities_by_date(target_date=None):
     articles = soup.select("article")
     print(f"[OK] Found {len(articles)} articles.")
 
-    batch = []
-    for idx, article in enumerate(articles, start=1):
-        try:
-            title_link = article.find("a", string=True, href=True)
-            if not title_link:
-                print(f"[WARN] No title found in article #{idx}, skipping...")
-                continue
+    # Phase 1: fetch all detail pages in parallel
+    candidates = []
+    with ThreadPoolExecutor(max_workers=MAX_DETAIL_WORKERS) as pool:
+        futures = {pool.submit(_fetch_article, session, a): a for a in articles}
+        for future in as_completed(futures):
+            opp = future.result()
+            if opp:
+                candidates.append(opp)
 
-            title = title_link.get_text(strip=True)
-            detail_url = title_link['href']
+    if not candidates:
+        return []
 
-            link, deadline, thumbnail, description, tags = extract_detail_info(session, detail_url)
-            link = clean_url(link)
-
-            if not link or link.startswith(BASE_URL):
-                print(f"[Skip] '{title}' (no valid link)")
-                continue
-
-            cleaned_deadline = clean_deadline(deadline)
-            opportunity = {
-                "title": title,
-                "link": link,
-                "deadline": cleaned_deadline,
-                "thumbnail": thumbnail,
-                "description": description,
-                "tags": tags
-            }
-
-            if opportunity_exists(title, link):
-                print(f"[Exists] Already exists: {title}")
-                continue
-
-            batch.append(opportunity)
-            print(f"[OK] Queued: {title}")
-
-        except Exception as e:
-            print(f"[ERR] Error parsing article #{idx}: {e}")
+    # Phase 2: batch-check existence
+    all_links = [c["link"] for c in candidates]
+    existing_links = opportunities_exist(all_links)
+    batch = [c for c in candidates if c["link"] not in existing_links]
 
     if batch:
         saved = bulk_save_opportunities(batch, scraped_date=target_date)
-        print(f"[Batch] Saved {saved}/{len(batch)} opportunities")
+        print(f"[Batch] Saved {saved}/{len(batch)} opportunities (skipped {len(candidates) - len(batch)} existing)")
         return batch[:saved]
     return []
 

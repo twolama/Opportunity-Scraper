@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from os import getenv
 from typing import List, Optional
 import re
-from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text, Boolean, DateTime, and_, text, func, Index
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, Text, Boolean, DateTime, and_, text, func, Index, case
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.exc import IntegrityError
 from dotenv import load_dotenv
@@ -20,16 +20,20 @@ if DATABASE_URL and ("supabase" in DATABASE_URL.lower() or getenv("DB_SSL", "fal
     _connect_args["sslmode"] = "require"
 
 # Create engine & session factory
-engine = create_engine(
-    DATABASE_URL, 
-    echo=False, 
-    future=True, 
-    pool_pre_ping=True,
-    pool_recycle=300,
-    pool_size=int(getenv("DB_POOL_SIZE", "5")),
-    max_overflow=int(getenv("DB_MAX_OVERFLOW", "5")),
-    connect_args=_connect_args
-)
+_is_sqlite = DATABASE_URL and DATABASE_URL.startswith("sqlite")
+if _is_sqlite:
+    engine = create_engine(DATABASE_URL, echo=False, future=True)
+else:
+    engine = create_engine(
+        DATABASE_URL,
+        echo=False,
+        future=True,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        pool_size=int(getenv("DB_POOL_SIZE", "5")),
+        max_overflow=int(getenv("DB_MAX_OVERFLOW", "5")),
+        connect_args=_connect_args,
+    )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
@@ -66,6 +70,28 @@ class ScheduleTime(Base):
     id = Column(Integer, primary_key=True, index=True)
     time_str = Column(String(5), nullable=False)  # "HH:MM" in UTC
     schedule_type = Column(String(10), nullable=False, default="scrape")  # "scrape" or "post"
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class PendingAdmin(Base):
+    __tablename__ = "pending_admins"
+
+    user_id = Column(BigInteger, primary_key=True)
+    name = Column(String, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class InviteToken(Base):
+    __tablename__ = "invite_tokens"
+
+    token = Column(String, primary_key=True)
+    owner_id = Column(BigInteger, nullable=False)
+    used = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class PendingScheduleInput(Base):
+    __tablename__ = "pending_schedule_input"
+
+    user_id = Column(BigInteger, primary_key=True)
+    input_type = Column(String(10), nullable=False)  # "scrape" or "post"
     created_at = Column(DateTime, default=datetime.utcnow)
 
 def get_schedule_times(schedule_type: str = "scrape") -> list[str]:
@@ -145,9 +171,124 @@ def format_time_12h(time_str: str) -> str:
     except Exception:
         return time_str
 
+# ---- Pending admin requests (multi-worker safe) ----
+
+def add_pending_admin(user_id: int, name: str) -> bool:
+    db = SessionLocal()
+    try:
+        existing = db.query(PendingAdmin).filter(PendingAdmin.user_id == user_id).first()
+        if existing:
+            return False
+        db.add(PendingAdmin(user_id=user_id, name=name))
+        db.commit()
+        return True
+    except IntegrityError:
+        db.rollback()
+        return False
+    finally:
+        db.close()
+
+def remove_pending_admin(user_id: int) -> str | None:
+    db = SessionLocal()
+    try:
+        row = db.query(PendingAdmin).filter(PendingAdmin.user_id == user_id).first()
+        if not row:
+            return None
+        name = row.name
+        db.delete(row)
+        db.commit()
+        return name
+    except Exception:
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
+def get_pending_admins() -> list[dict]:
+    db = SessionLocal()
+    try:
+        rows = db.query(PendingAdmin).order_by(PendingAdmin.created_at).all()
+        return [{"user_id": r.user_id, "name": r.name} for r in rows]
+    finally:
+        db.close()
+
+# ---- Invite tokens (multi-worker safe) ----
+
+def add_invite_token(token: str, owner_id: int) -> bool:
+    db = SessionLocal()
+    try:
+        db.add(InviteToken(token=token, owner_id=owner_id))
+        db.commit()
+        return True
+    except IntegrityError:
+        db.rollback()
+        return False
+    finally:
+        db.close()
+
+def consume_invite_token(token: str) -> int | None:
+    """Mark a token as used and return the owner_id. Returns None if invalid/used/expired."""
+    db = SessionLocal()
+    try:
+        row = db.query(InviteToken).filter(
+            InviteToken.token == token,
+            InviteToken.used == False,
+        ).first()
+        if not row:
+            return None
+        now = datetime.utcnow()
+        age = now - row.created_at
+        if age.total_seconds() > 86400:  # 24h TTL
+            row.used = True  # mark expired so it can't be used later
+            db.commit()
+            return None
+        row.used = True
+        db.commit()
+        return row.owner_id
+    except Exception:
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
+# ---- Pending schedule input (multi-worker safe) ----
+
+def set_pending_schedule_input(user_id: int, input_type: str) -> None:
+    db = SessionLocal()
+    try:
+        existing = db.query(PendingScheduleInput).filter(PendingScheduleInput.user_id == user_id).first()
+        if existing:
+            existing.input_type = input_type
+        else:
+            db.add(PendingScheduleInput(user_id=user_id, input_type=input_type))
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+def pop_pending_schedule_input(user_id: int) -> str | None:
+    db = SessionLocal()
+    try:
+        row = db.query(PendingScheduleInput).filter(PendingScheduleInput.user_id == user_id).first()
+        if not row:
+            return None
+        input_type = row.input_type
+        db.delete(row)
+        db.commit()
+        return input_type
+    except Exception:
+        db.rollback()
+        return None
+    finally:
+        db.close()
+
 def init_db():
-    """Create tables in DB if they don't exist"""
+    """Create tables and run pending Alembic migrations."""
+    # Create tables defined by ORM models (idempotent; does not alter existing)
     Base.metadata.create_all(bind=engine)
+    # Run Alembic migrations for schema changes not captured by create_all
+    _run_alembic_migrations()
     # Ensure BOT_OWNER_ID is always an admin
     owner_id = getenv("BOT_OWNER_ID")
     if owner_id:
@@ -163,49 +304,6 @@ def init_db():
             pass
         finally:
             db.close()
-    # Migration: add name column if missing
-    try:
-        db = SessionLocal()
-        db.execute(text("ALTER TABLE bot_admins ADD COLUMN name VARCHAR DEFAULT ''"))
-        db.commit()
-        print("[DB] Added name column to bot_admins")
-    except Exception:
-        pass
-    finally:
-        db.close()
-    # Migration: add indexes if missing
-    try:
-        db = SessionLocal()
-        db.execute(text("CREATE INDEX IF NOT EXISTS idx_posted_to_telegram ON opportunities (posted_to_telegram)"))
-        db.execute(text("CREATE INDEX IF NOT EXISTS idx_created_at ON opportunities (created_at)"))
-        db.commit()
-        print("[DB] Indexes created")
-    except Exception:
-        pass
-    finally:
-        db.close()
-    # Migration: unique constraint on link (ignore if already exists)
-    try:
-        db = SessionLocal()
-        db.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_link ON opportunities (link)"))
-        db.commit()
-        print("[DB] Unique index on link created")
-    except Exception:
-        pass
-    finally:
-        db.close()
-    # Migration: add schedule_type column + unique index
-    try:
-        db = SessionLocal()
-        db.execute(text("ALTER TABLE schedule_times ADD COLUMN IF NOT EXISTS schedule_type VARCHAR(10) DEFAULT 'scrape'"))
-        db.execute(text("UPDATE schedule_times SET schedule_type = 'scrape' WHERE schedule_type IS NULL"))
-        db.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_schedule ON schedule_times (time_str, schedule_type)"))
-        db.commit()
-        print("[DB] Schedule type migration done")
-    except Exception:
-        pass
-    finally:
-        db.close()
     # Seed default schedule times if table is empty
     try:
         db = SessionLocal()
@@ -224,6 +322,19 @@ def init_db():
         pass
     finally:
         db.close()
+
+def _run_alembic_migrations():
+    """Run Alembic upgrades to head. Falls back to stamp if not yet stamped."""
+    try:
+        from alembic.config import Config as AlembicConfig
+        from alembic import command as alembic_cmd
+        import os
+        ini_path = os.path.join(os.path.dirname(__file__), "..", "alembic.ini")
+        if os.path.isfile(ini_path):
+            alembic_cfg = AlembicConfig(ini_path)
+            alembic_cmd.upgrade(alembic_cfg, "head")
+    except Exception:
+        pass  # Alembic is optional — never block startup
 
 def is_admin(user_id: int) -> bool:
     db = SessionLocal()
@@ -280,6 +391,15 @@ def opportunity_exists(title: str, link: str) -> bool:
     finally:
         db.close()
 
+def opportunities_exist(links: list[str]) -> set[str]:
+    """Batch-check which links already exist in the DB. Returns a set of existing links."""
+    db = SessionLocal()
+    try:
+        results = db.query(Opportunity.link).filter(Opportunity.link.in_(links)).all()
+        return {r[0] for r in results}
+    finally:
+        db.close()
+
 def save_opportunity(opportunity: dict, scraped_date: Optional[str] = None) -> bool:
     db = SessionLocal()
     if scraped_date:
@@ -321,17 +441,7 @@ def get_opportunity_by_id(opportunity_id: int) -> Optional[dict]:
     try:
         opp = db.query(Opportunity).filter_by(id=opportunity_id).first()
         if opp:
-            return {
-                "id": opp.id,
-                "title": opp.title,
-                "link": opp.link,
-                "description": opp.description,
-                "deadline": opp.deadline,
-                "thumbnail": opp.thumbnail,
-                "tags": opp.tags.split(", ") if opp.tags else [],
-                "created_at": opp.created_at,
-                "posted_to_telegram": opp.posted_to_telegram,
-            }
+            return opportunity_to_dict(opp)
         return None
     finally:
         db.close()
@@ -380,18 +490,7 @@ def get_unposted_opportunities() -> List[dict]:
     db = SessionLocal()
     try:
         results = db.query(Opportunity).filter_by(posted_to_telegram=False).all()
-        return [
-            {
-                "id": opp.id,
-                "title": opp.title,
-                "link": opp.link,
-                "description": opp.description,
-                "deadline": opp.deadline,
-                "thumbnail": opp.thumbnail,
-                "tags": opp.tags.split(", ") if opp.tags else []
-            }
-            for opp in results
-        ]
+        return [opportunity_to_dict(opp, include_status=False) for opp in results]
     finally:
         db.close()
 
@@ -400,25 +499,12 @@ def get_all_opportunities() -> List[dict]:
     try:
         results = db.query(Opportunity).order_by(Opportunity.created_at.desc()).all()
         print(f"Fetched {len(results)} opportunities from DB")
-        return [
-            {
-                "id": opp.id,
-                "title": opp.title,
-                "link": opp.link,
-                "description": opp.description,
-                "deadline": opp.deadline,
-                "thumbnail": opp.thumbnail,
-                "tags": opp.tags.split(", ") if opp.tags else [],
-                "created_at": opp.created_at,
-                "posted_to_telegram": opp.posted_to_telegram,
-            }
-            for opp in results
-        ]
+        return [opportunity_to_dict(opp) for opp in results]
     finally:
         db.close()
 
-def _format_opportunity(opp):
-    return {
+def opportunity_to_dict(opp, include_status: bool = True) -> dict:
+    d = {
         "id": opp.id,
         "title": opp.title,
         "link": opp.link,
@@ -426,29 +512,39 @@ def _format_opportunity(opp):
         "deadline": opp.deadline,
         "thumbnail": opp.thumbnail,
         "tags": opp.tags.split(", ") if opp.tags else [],
-        "created_at": opp.created_at,
-        "posted_to_telegram": opp.posted_to_telegram,
     }
+    if include_status:
+        d["created_at"] = opp.created_at
+        d["posted_to_telegram"] = opp.posted_to_telegram
+    return d
+
+def _date_range(date_str: str) -> tuple[datetime, datetime]:
+    dt = datetime.strptime(date_str, "%Y-%m-%d")
+    return dt, dt + timedelta(days=1)
 
 def get_unposted_by_date(date_str: str) -> List[dict]:
     db = SessionLocal()
     try:
+        start, end = _date_range(date_str)
         results = db.query(Opportunity).filter(
             Opportunity.posted_to_telegram == False,
-            func.date(Opportunity.created_at) == date_str
+            Opportunity.created_at >= start,
+            Opportunity.created_at < end,
         ).order_by(Opportunity.created_at.desc()).all()
-        return [_format_opportunity(o) for o in results]
+        return [opportunity_to_dict(o) for o in results]
     finally:
         db.close()
 
 def get_posted_by_date(date_str: str) -> List[dict]:
     db = SessionLocal()
     try:
+        start, end = _date_range(date_str)
         results = db.query(Opportunity).filter(
             Opportunity.posted_to_telegram == True,
-            func.date(Opportunity.created_at) == date_str
+            Opportunity.created_at >= start,
+            Opportunity.created_at < end,
         ).order_by(Opportunity.created_at.desc()).all()
-        return [_format_opportunity(o) for o in results]
+        return [opportunity_to_dict(o) for o in results]
     finally:
         db.close()
 
@@ -460,35 +556,36 @@ def get_stats_from_db() -> dict:
         week_start = today_start - timedelta(days=today_start.weekday())
         month_start = today_start.replace(day=1)
 
-        total = db.query(func.count(Opportunity.id)).scalar() or 0
-        unposted = db.query(func.count(Opportunity.id)).filter(
-            Opportunity.posted_to_telegram == False
-        ).scalar() or 0
-        posted = db.query(func.count(Opportunity.id)).filter(
-            Opportunity.posted_to_telegram == True
-        ).scalar() or 0
+        # Query 1: total / posted / unposted in a single GROUP BY
+        status_counts = dict(
+            db.query(Opportunity.posted_to_telegram, func.count(Opportunity.id))
+            .group_by(Opportunity.posted_to_telegram)
+            .all()
+        )
+        posted = status_counts.get(True, 0)
+        unposted = status_counts.get(False, 0)
+        total = posted + unposted
 
-        today_count = db.query(func.count(Opportunity.id)).filter(
-            Opportunity.created_at >= today_start
-        ).scalar() or 0
-        week_count = db.query(func.count(Opportunity.id)).filter(
-            Opportunity.created_at >= week_start
-        ).scalar() or 0
-        month_count = db.query(func.count(Opportunity.id)).filter(
-            Opportunity.created_at >= month_start
-        ).scalar() or 0
+        # Query 2: min/max and date-range counts in one pass
+        row = db.query(
+            func.min(Opportunity.created_at),
+            func.max(Opportunity.created_at).filter(Opportunity.posted_to_telegram == True),
+            func.sum(case((Opportunity.created_at >= today_start, 1), else_=0)),
+            func.sum(case((Opportunity.created_at >= week_start, 1), else_=0)),
+            func.sum(case((Opportunity.created_at >= month_start, 1), else_=0)),
+        ).first()
+        oldest = row[0]
+        last_posted = row[1]
+        today_count = row[2] or 0
+        week_count = row[3] or 0
+        month_count = row[4] or 0
 
-        last_posted = db.query(func.max(Opportunity.created_at)).filter(
-            Opportunity.posted_to_telegram == True
-        ).scalar()
-        oldest = db.query(func.min(Opportunity.created_at)).scalar()
-
-        # Top 10 tags by frequency
+        # Query 3: top 10 tags (tags are comma-separated text, so fetch all and count in Python)
+        from collections import Counter
+        tag_counter: Counter = Counter()
         all_tags = db.query(Opportunity.tags).filter(
             Opportunity.tags.isnot(None), Opportunity.tags != ""
         ).all()
-        from collections import Counter
-        tag_counter: Counter = Counter()
         for (tags_str,) in all_tags:
             for tag in tags_str.split(", "):
                 tag = tag.strip()
@@ -500,9 +597,9 @@ def get_stats_from_db() -> dict:
             "total": total,
             "unposted": unposted,
             "posted": posted,
-            "today": today_count,
-            "week": week_count,
-            "month": month_count,
+            "today": int(today_count),
+            "week": int(week_count),
+            "month": int(month_count),
             "last_posted": last_posted.strftime("%Y-%m-%d %H:%M") if last_posted else "N/A",
             "oldest": oldest.strftime("%Y-%m-%d") if oldest else "N/A",
             "top_tags": top_tags,
@@ -526,7 +623,7 @@ def search_opportunities(keyword: str, skip: int = 0, limit: int = 10, posted: O
         total = q.count()
         results = q.order_by(Opportunity.created_at.desc()).offset(skip).limit(limit).all()
         return {
-            "results": [_format_opportunity(o) for o in results],
+            "results": [opportunity_to_dict(o) for o in results],
             "total": total,
             "offset": skip,
             "limit": limit

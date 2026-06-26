@@ -4,6 +4,7 @@ import time
 import logging
 from datetime import datetime
 from threading import Lock
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import sentry_sdk
 from app.scraper import fetch_opportunities_by_date_safe
 from app.database import delete_old_entries, get_schedule_times, get_unposted_opportunities
@@ -64,6 +65,20 @@ def _remaining_post_slots_today() -> int:
     post_times = get_schedule_times("post")
     return sum(1 for t in sorted(post_times) if t >= now)
 
+def _post_batch(batch: list) -> int:
+    """Post a batch of opportunities in parallel with rate limiting."""
+    sent = 0
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {}
+        for i, opp in enumerate(batch):
+            futures[pool.submit(post_to_telegram, opp)] = opp
+            if i > 0 and i % 3 == 0:
+                time.sleep(0.5)
+        for future in as_completed(futures):
+            if future.result():
+                sent += 1
+    return sent
+
 def run_post():
     print(f"[Scheduler] Running post...")
     try:
@@ -81,9 +96,8 @@ def run_post():
         batch_size = math.ceil(len(unposted) / remaining)
         batch = unposted[:batch_size]
         print(f"[Scheduler] Posting {len(batch)}/{len(unposted)} opportunities ({batch_size} per {remaining} remaining slot(s))")
-        for opp in batch:
-            post_to_telegram(opp)
-        logger.info(f"Posted {len(batch)} opportunities")
+        sent = _post_batch(batch)
+        logger.info(f"Posted {sent}/{len(batch)} opportunities")
     except Exception as e:
         logger.error(f"Post task failed: {e}", exc_info=True)
         sentry_sdk.capture_exception(e)
@@ -106,8 +120,7 @@ def _catch_up_posts():
     batch_size = min(batch_per_slot * passed, len(unposted))
     batch = unposted[:batch_size]
     print(f"[Scheduler] Catch-up: posting {len(batch)}/{len(unposted)} opportunities ({passed} slot(s) missed)")
-    for opp in batch:
-        post_to_telegram(opp)
+    sent = _post_batch(batch)
     _catch_up_done_today = today
 
 def start_scheduler():
