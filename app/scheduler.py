@@ -34,10 +34,13 @@ def reload_schedules():
         if not changed:
             return
         schedule.clear()
+        now = datetime.now().strftime("%H:%M")
         for t in scrape_times:
-            schedule.every().day.at(t).do(run_scrape)
+            if t >= now:
+                schedule.every().day.at(t).do(run_scrape)
         for t in post_times:
-            schedule.every().day.at(t).do(run_post)
+            if t >= now:
+                schedule.every().day.at(t).do(run_post)
         print(f"[Scheduler] Search times: {scrape_times}")
         print(f"[Scheduler] Post times: {post_times}")
 

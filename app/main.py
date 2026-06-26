@@ -1307,7 +1307,10 @@ def process_telegram_update(data, run_in_background=None):
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, process_telegram_update, data, background_tasks.add_task)
+    try:
+        await loop.run_in_executor(None, process_telegram_update, data, background_tasks.add_task)
+    except Exception as e:
+        logging.warning(_sanitize(f"Webhook processing error: {e}"))
     return {"ok": True}
 
 # CORS config - allow all origins for now, restrict in production if needed
@@ -1353,8 +1356,12 @@ def start_polling():
                 for k in expired:
                     del _invite_tokens[k]
                 for update in resp.json().get("result", []):
-                    process_telegram_update(update)
-                    offset = update["update_id"] + 1
+                    try:
+                        process_telegram_update(update)
+                    except Exception as e:
+                        logging.warning(_sanitize(f"Error processing update {update.get('update_id')}: {e}"))
+                    finally:
+                        offset = update["update_id"] + 1
         except requests.exceptions.Timeout:
             backoff = 1
             pass
