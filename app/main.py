@@ -71,7 +71,7 @@ async def lifespan(app):
     except Exception as e:
         logging.warning("DB init failed (will retry on next restart): %s", e)
     if not TELEGRAM_CHANNEL_ID:
-        logging.warning("TELEGRAM_CHANNEL_ID not set — posting to Telegram will fail")
+        logging.info("TELEGRAM_CHANNEL_ID not set — will use channels configured via Telegram admin")
     try:
         me = _http.post(f"{TELEGRAM_API_URL}/getMe").json().get("result", {})
         set_bot_info(me.get("username"), me.get("first_name", "Opportunity Search Bot"))

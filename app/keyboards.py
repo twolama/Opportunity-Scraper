@@ -23,6 +23,7 @@ def build_main_menu(user_id=None):
     if is_owner:
         keyboard.append([
             {"text": "⏰ Schedules", "callback_data": "list_schedules"},
+            {"text": "📢 Channels", "callback_data": "channels"},
             {"text": "👥 Admins", "callback_data": "admin_menu"}
         ])
     return {"inline_keyboard": keyboard}

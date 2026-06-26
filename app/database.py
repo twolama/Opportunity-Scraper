@@ -91,6 +91,59 @@ class PendingScheduleInput(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Channel(Base):
+    __tablename__ = "channels"
+
+    chat_id = Column(BigInteger, primary_key=True)
+    title = Column(String, default="")
+    added_by = Column(BigInteger, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
+
+
+def add_channel(chat_id: int, title: str = "", added_by: int = 0) -> bool:
+    try:
+        with get_session() as db:
+            existing = db.query(Channel).filter_by(chat_id=chat_id).first()
+            if existing:
+                existing.is_active = True
+                if title:
+                    existing.title = title
+                return True
+            db.add(Channel(chat_id=chat_id, title=title, added_by=added_by))
+            return True
+    except Exception as e:
+        _logger.warning("Failed to add channel %s: %s", chat_id, e, exc_info=True)
+        return False
+
+
+def remove_channel(chat_id: int) -> bool:
+    try:
+        with get_session() as db:
+            ch = db.query(Channel).filter_by(chat_id=chat_id).first()
+            if not ch:
+                return False
+            db.delete(ch)
+            return True
+    except Exception as e:
+        _logger.warning("Failed to remove channel %s: %s", chat_id, e, exc_info=True)
+        return False
+
+
+def get_active_channels() -> list[dict]:
+    with get_session() as db:
+        rows = db.query(Channel).filter_by(is_active=True).order_by(Channel.created_at).all()
+        return [{"chat_id": r.chat_id, "title": r.title, "added_by": r.added_by, "created_at": r.created_at} for r in rows]
+
+
+def get_channel(chat_id: int) -> Optional[dict]:
+    with get_session() as db:
+        r = db.query(Channel).filter_by(chat_id=chat_id).first()
+        if r:
+            return {"chat_id": r.chat_id, "title": r.title, "added_by": r.added_by, "created_at": r.created_at, "is_active": r.is_active}
+        return None
+
+
 def get_schedule_times(schedule_type: str = "scrape") -> list[str]:
     with get_session() as db:
         rows = db.query(ScheduleTime).filter(ScheduleTime.schedule_type == schedule_type).order_by(ScheduleTime.time_str).all()

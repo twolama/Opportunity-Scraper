@@ -37,6 +37,9 @@ from app.database import (
     consume_invite_token,
     set_pending_schedule_input,
     pop_pending_schedule_input,
+    add_channel,
+    remove_channel,
+    get_active_channels,
 )
 from app.telegram_bot import post_to_telegram
 from app.config import TELEGRAM_API_URL, BOT_OWNER_ID
@@ -123,6 +126,23 @@ def _scrape_only(today, chat_id, message_id):
 
 
 def process_telegram_update(data, run_in_background=None):
+    # Auto-detect when bot is added to a group or channel
+    my_chat_member = data.get("my_chat_member")
+    if my_chat_member:
+        chat = my_chat_member.get("chat", {})
+        chat_id = chat.get("id")
+        new_status = my_chat_member.get("new_chat_member", {}).get("status", "")
+        if new_status in ("member", "administrator"):
+            title = chat.get("title", f"Chat {chat_id}")
+            add_channel(chat_id, title=title)
+            logger.info("Auto-added channel %s (%s)", title, chat_id)
+            _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                "chat_id": chat_id,
+                "text": "👋 Bot added! Use the bot's admin panel to manage this channel.",
+                "parse_mode": "HTML"
+            })
+            return {"ok": True}
+
     message = data.get("message")
     callback_query = data.get("callback_query")
     chat_id = None
@@ -476,6 +496,23 @@ def process_telegram_update(data, run_in_background=None):
             _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
                 "chat_id": chat_id, "text": msg, "parse_mode": "HTML"
             })
+            return {"ok": True}
+        # Check if user sent a chat ID to add a channel
+        try:
+            potential_chat_id = int(text.strip().lstrip("-"))
+            text_stripped = text.strip()
+            # Accept numeric chat IDs (positive for users, negative for groups/channels)
+            if text_stripped.lstrip("-").isdigit():
+                chat_id_val = int(text_stripped)
+                add_channel(chat_id_val, title=f"Channel {chat_id_val}", added_by=user_id)
+                _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                    "chat_id": chat_id,
+                    "text": f"✅ Channel <code>{chat_id_val}</code> added!",
+                    "parse_mode": "HTML"
+                })
+                return {"ok": True}
+        except (ValueError, TypeError):
+            pass
     elif callback_query:
         if text == "noop":
             callback_id = callback_query.get("id")
@@ -783,6 +820,75 @@ def process_telegram_update(data, run_in_background=None):
                 "reply_markup": {
                     "inline_keyboard": [[{"text": "👥 Admin Menu", "callback_data": "admin_menu"}]]
                 }
+            })
+        elif text == "channels" and user_id == BOT_OWNER_ID:
+            channels = get_active_channels()
+            lines = ["<b>📢 Channels</b>\n"]
+            if channels:
+                for i, ch in enumerate(channels, 1):
+                    lines.append(f"{i}. {ch['title']} — <code>{ch['chat_id']}</code>")
+            else:
+                lines.append("No channels configured.")
+                if TELEGRAM_CHANNEL_ID:
+                    lines.append(f"\nUsing <code>{TELEGRAM_CHANNEL_ID}</code> from TELEGRAM_CHANNEL_ID env var.")
+            txt = "\n".join(lines)
+            rm = [[{"text": f"❌ {ch['title']}", "callback_data": f"remove_channel_{ch['chat_id']}"}] for ch in channels]
+            keyboard = rm + [
+                [{"text": "➕ Add Channel", "callback_data": "add_channel_prompt"}],
+                [{"text": "🔙 Main Menu", "callback_data": "main_menu"}]
+            ]
+            safe_edit_message_text({
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "text": txt,
+                "parse_mode": "HTML",
+                "reply_markup": {"inline_keyboard": keyboard}
+            })
+        elif text == "add_channel_prompt" and user_id == BOT_OWNER_ID:
+            safe_edit_message_text({
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "text": (
+                    "<b>➕ Add a Channel</b>\n\n"
+                    "Send me the chat ID of the channel or group.\n\n"
+                    "Get the ID by:\n"
+                    "1. Forward a message from the channel to <code>@getidsbot</code>\n"
+                    "2. Or add me to the group and I'll auto-detect it\n\n"
+                    "Group/channel IDs are negative numbers (e.g., <code>-1001234567890</code>)."
+                ),
+                "parse_mode": "HTML",
+                "reply_markup": {
+                    "inline_keyboard": [
+                        [{"text": "🔙 Channels", "callback_data": "channels"}]
+                    ]
+                }
+            })
+        elif text.startswith("remove_channel_") and user_id == BOT_OWNER_ID:
+            try:
+                target_id = int(text.replace("remove_channel_", ""))
+                removed = remove_channel(target_id)
+                msg = f"🗑️ Channel <code>{target_id}</code> removed." if removed else "❌ Channel not found."
+            except ValueError:
+                msg = "❌ Invalid channel ID."
+            channels = get_active_channels()
+            lines = ["<b>📢 Channels</b>\n"]
+            if channels:
+                for i, ch in enumerate(channels, 1):
+                    lines.append(f"{i}. {ch['title']} — <code>{ch['chat_id']}</code>")
+            else:
+                lines.append("No channels configured.")
+            txt = msg + "\n\n" + "\n".join(lines)
+            rm = [[{"text": f"❌ {ch['title']}", "callback_data": f"remove_channel_{ch['chat_id']}"}] for ch in channels]
+            keyboard = rm + [
+                [{"text": "➕ Add Channel", "callback_data": "add_channel_prompt"}],
+                [{"text": "🔙 Main Menu", "callback_data": "main_menu"}]
+            ]
+            safe_edit_message_text({
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "text": txt,
+                "parse_mode": "HTML",
+                "reply_markup": {"inline_keyboard": keyboard}
             })
         elif text.startswith("posted_pick_year"):
             safe_edit_message_text({

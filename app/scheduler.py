@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import sentry_sdk
 from app.scraper import fetch_opportunities_by_date_safe
 from app.database import delete_old_entries, get_schedule_times, get_unposted_opportunities
-from app.telegram_bot import post_to_telegram
+from app.telegram_bot import post_to_telegram, post_to_all_channels
 from app.rate_limiter import telegram_limiter
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ def _remaining_post_slots_today() -> int:
     return sum(1 for t in sorted(post_times) if t >= now)
 
 def _post_batch(batch: list) -> int:
-    """Post a batch of opportunities in parallel with rate limiting."""
+    """Post a batch of opportunities to all channels in parallel with rate limiting."""
     sent = 0
     with ThreadPoolExecutor(max_workers=3) as pool:
         futures = {}
@@ -104,7 +104,7 @@ def _post_batch(batch: list) -> int:
             wait = telegram_limiter.consume()
             if wait > 0:
                 time.sleep(wait)
-            futures[pool.submit(post_to_telegram, opp)] = opp
+            futures[pool.submit(post_to_all_channels, opp)] = opp
         for future in as_completed(futures):
             if future.result():
                 sent += 1

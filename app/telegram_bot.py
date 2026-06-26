@@ -71,8 +71,9 @@ def _post_to_telegram_with_retry(payload: dict, use_photo: bool = False) -> requ
     return resp
 
 
-def post_to_telegram(opportunity: dict) -> bool:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHANNEL_ID:
+def post_to_telegram(opportunity: dict, chat_id: Optional[str] = None) -> bool:
+    target = chat_id or TELEGRAM_CHANNEL_ID
+    if not TELEGRAM_BOT_TOKEN or not target:
         _logger.error("Missing Telegram credentials in environment variables.")
         return False
 
@@ -93,7 +94,7 @@ def post_to_telegram(opportunity: dict) -> bool:
 
     try:
         payload = {
-            "chat_id": TELEGRAM_CHANNEL_ID,
+            "chat_id": target,
             "parse_mode": "HTML",
             "disable_web_page_preview": False,
             "reply_markup": reply_markup
@@ -120,7 +121,7 @@ def post_to_telegram(opportunity: dict) -> bool:
             else:
                 raise
 
-        _logger.info(f"Posted to Telegram: {opportunity['title']}")
+        _logger.info(f"Posted to Telegram: {opportunity['title']} -> {target}")
         update_posted_status(opportunity["id"])
         return True
 
@@ -132,6 +133,24 @@ def post_to_telegram(opportunity: dict) -> bool:
         _logger.error(f"Unexpected error posting '{opportunity['title']}': {_sanitize(str(e))}")
         sentry_sdk.capture_exception(e)
         return False
+
+
+def post_to_all_channels(opportunity: dict) -> bool:
+    """Post an opportunity to all active channels. Returns True if at least one succeeded."""
+    from app.database import get_active_channels
+    channels = get_active_channels()
+    if not channels:
+        if TELEGRAM_CHANNEL_ID:
+            channels = [{"chat_id": TELEGRAM_CHANNEL_ID, "title": "default"}]
+        else:
+            _logger.warning("No channels configured and TELEGRAM_CHANNEL_ID not set")
+            return False
+    any_success = False
+    for ch in channels:
+        ok = post_to_telegram(opportunity, chat_id=str(ch["chat_id"]))
+        if ok:
+            any_success = True
+    return any_success
 
 
 def post_new_opportunities(date_str: Optional[str] = None):
