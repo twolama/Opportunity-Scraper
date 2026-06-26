@@ -142,6 +142,8 @@ def _fetch_article(article):
         return None
     if link.startswith("/"):
         link = BASE_URL.rstrip("/") + link
+    if link.startswith(BASE_URL):
+        return None
     cleaned_deadline = clean_deadline(deadline)
     return {
         "title": title,

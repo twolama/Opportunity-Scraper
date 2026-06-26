@@ -632,6 +632,8 @@ def bulk_save_opportunities(opportunities: list[dict], scraped_date: Optional[st
         for opp in opportunities:
             if opp["link"] in existing_links:
                 continue
+            if opp["link"].startswith("https://opportunitydesk.org"):
+                continue
             new_data.append({
                 "title": opp['title'],
                 "link": opp['link'],

@@ -92,7 +92,7 @@ class TestFetchArticle:
         assert opp["thumbnail"] == "https://example.com/thumb.jpg"
         assert opp["tags"] == ["Scholarship", "Fully Funded"]
 
-    def test_relative_link_resolved(self):
+    def test_relative_link_resolved_and_skipped(self):
         detail_html = """
         <html><body><div class='entry-content'>
         <p>For more information <a href="/apply/456">apply here</a>.</p>
@@ -105,8 +105,7 @@ class TestFetchArticle:
              patch("app.scraper.make_session", return_value=MagicMock()):
             opp = _fetch_article(article)
 
-        assert opp is not None
-        assert opp["link"] == "https://opportunitydesk.org/apply/456"
+        assert opp is None
 
     def test_no_title_link_returns_none(self):
         article = BeautifulSoup("<article><p>No anchor</p></article>", "html.parser").find("article")
