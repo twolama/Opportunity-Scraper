@@ -9,34 +9,11 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 import sentry_sdk
 from app.config import TELEGRAM_API_URL, TELEGRAM_CHANNEL_ID, TELEGRAM_BOT_TOKEN
 from app.database import update_posted_status, get_unposted_opportunities
-from app.utils import format_telegram_message
+from app.utils import format_telegram_message, format_condensed_post, _close_html_tags, split_html_message
+from app.telegraph import create_page, build_telegraph_content
 
 from app.http_client import http as _http, sanitize as _sanitize, strip_invisible as _strip_invisible
 _logger = logging.getLogger(__name__)
-
-
-def _close_html_tags(text: str) -> str:
-    """Close any unclosed HTML tags after truncation."""
-    tags = []
-    i = 0
-    while i < len(text):
-        if text[i] == '<':
-            close = text.find('>', i)
-            if close == -1:
-                text = text[:i]
-                break
-            tag = text[i+1:close]
-            if tag.startswith('/'):
-                if tags and tags[-1] == tag[1:]:
-                    tags.pop()
-            elif not tag.endswith('/') and tag[0] != '/' and ' ' not in tag and tag not in ('br', 'hr'):
-                tags.append(tag.split()[0])
-            i = close + 1
-        else:
-            i += 1
-    for t in reversed(tags):
-        text += f'</{t}>'
-    return text
 
 
 def _is_retryable(exc: BaseException) -> bool:
@@ -71,8 +48,6 @@ def post_to_telegram(opportunity: dict, chat_id: Optional[str] = None) -> bool:
         _logger.error("Missing Telegram credentials in environment variables.")
         return False
 
-    message = format_telegram_message(opportunity)
-
     # Prepare inline button
     link = _strip_invisible(opportunity.get("link", "https://fallback-link.com")).strip()
     reply_markup = {
@@ -87,35 +62,154 @@ def post_to_telegram(opportunity: dict, chat_id: Optional[str] = None) -> bool:
     }
 
     try:
+        thumbnail = _strip_invisible(opportunity.get("thumbnail", ""))
+        use_photo = bool(thumbnail)
+
+        # Determine limits
+        text_limit = 1024 if use_photo else 4096
+
+        # Try full message first
+        message = format_telegram_message(opportunity)
+        fits_inline = len(message) <= text_limit
+
+        if fits_inline:
+            # Short enough — send directly (existing behavior)
+            payload = {
+                "chat_id": target,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": False,
+                "reply_markup": reply_markup
+            }
+            if use_photo:
+                payload["photo"] = thumbnail
+                payload["caption"] = message
+            else:
+                payload["text"] = message
+
+            try:
+                response = _post_to_telegram_with_retry(payload, use_photo=use_photo)
+            except requests.RequestException:
+                if use_photo:
+                    _logger.warning(
+                        f"sendPhoto failed for '{opportunity['title']}', falling back to sendMessage"
+                    )
+                    text_limit = 4096
+                    fits_inline = len(message) <= text_limit
+                    if fits_inline:
+                        payload.pop("photo", None)
+                        payload.pop("caption", None)
+                        payload["text"] = message
+                        response = _post_to_telegram_with_retry(payload, use_photo=False)
+                        use_photo = False
+                    else:
+                        raise
+                else:
+                    raise
+
+            _logger.info(f"Posted directly to Telegram: {opportunity['title']} -> {target}")
+            update_posted_status(opportunity["id"])
+            return True
+
+        # Message too long — try Telegraph
+        telegraph_url = create_page(
+            title=opportunity.get("title", "Opportunity"),
+            content=build_telegraph_content(opportunity),
+        )
+
+        if telegraph_url:
+            # Success — send condensed post with Telegraph link
+            condensed = format_condensed_post(opportunity, telegraph_url)
+
+            # Try photo+caption if thumbnail available and condensed fits
+            if use_photo and len(condensed) <= 1024:
+                payload = {
+                    "chat_id": target,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": False,
+                    "reply_markup": reply_markup,
+                    "photo": thumbnail,
+                    "caption": condensed,
+                }
+                try:
+                    response = _post_to_telegram_with_retry(payload, use_photo=True)
+                except requests.RequestException:
+                    _logger.warning(
+                        f"sendPhoto failed for '{opportunity['title']}', falling back to sendMessage"
+                    )
+                    payload.pop("photo", None)
+                    payload.pop("caption", None)
+                    payload["text"] = condensed
+                    response = _post_to_telegram_with_retry(payload, use_photo=False)
+            else:
+                payload = {
+                    "chat_id": target,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": False,
+                    "reply_markup": reply_markup,
+                    "text": condensed,
+                }
+                response = _post_to_telegram_with_retry(payload, use_photo=False)
+
+            _logger.info(f"Posted via Telegraph: {opportunity['title']} -> {target}")
+            update_posted_status(opportunity["id"])
+            return True
+
+        # Telegraph failed — fall back to splitting
+        _logger.warning(
+            f"Telegraph unavailable for '{opportunity['title']}', falling back to split message"
+        )
+        if use_photo and text_limit == 1024:
+            use_photo = False
+            text_limit = 4096
+
+        chunks = split_html_message(message, max_length=text_limit)
+
         payload = {
             "chat_id": target,
             "parse_mode": "HTML",
             "disable_web_page_preview": False,
             "reply_markup": reply_markup
         }
-        thumbnail = _strip_invisible(opportunity.get("thumbnail", ""))
-        use_photo = bool(thumbnail)
 
         if use_photo:
-            caption = _close_html_tags(message[:1024])
             payload["photo"] = thumbnail
-            payload["caption"] = caption
+            payload["caption"] = chunks[0]
         else:
-            payload["text"] = _close_html_tags(message[:4096])
+            payload["text"] = chunks[0]
 
         try:
             response = _post_to_telegram_with_retry(payload, use_photo=use_photo)
         except requests.RequestException:
             if use_photo:
-                _logger.warning(f"sendPhoto failed for '{opportunity['title']}', falling back to sendMessage")
+                _logger.warning(
+                    f"sendPhoto failed for '{opportunity['title']}', falling back to sendMessage"
+                )
+                chunks = split_html_message(message, max_length=4096)
                 payload.pop("photo", None)
                 payload.pop("caption", None)
-                payload["text"] = _close_html_tags(message[:4096])
+                payload["text"] = chunks[0]
                 response = _post_to_telegram_with_retry(payload, use_photo=False)
             else:
                 raise
 
-        _logger.info(f"Posted to Telegram: {opportunity['title']} -> {target}")
+        first_message_id = response.json()["result"]["message_id"]
+
+        for chunk in chunks[1:]:
+            reply_payload = {
+                "chat_id": target,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+                "text": chunk,
+                "reply_to_message_id": first_message_id,
+            }
+            try:
+                _post_to_telegram_with_retry(reply_payload, use_photo=False)
+            except requests.RequestException as e:
+                _logger.warning(f"Failed to send continuation chunk: {_sanitize(str(e))}")
+
+        _logger.info(
+            f"Posted to Telegram (split fallback): {opportunity['title']} -> {target} ({len(chunks)} chunk(s))"
+        )
         update_posted_status(opportunity["id"])
         return True
 

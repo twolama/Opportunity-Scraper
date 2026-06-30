@@ -248,6 +248,35 @@ def process_telegram_update(data, run_in_background=None):
                 "chat_id": chat_id, "text": msg, "parse_mode": "HTML"
             })
             return {"ok": True}
+        if text and text.startswith("/telegraph"):
+            from app.config import TELEGRAPH_ACCESS_TOKEN
+            from app.telegraph import create_page, build_telegraph_content, ensure_account
+
+            token = TELEGRAPH_ACCESS_TOKEN
+            if not token:
+                token = ensure_account()
+
+            if token:
+                lines = [
+                    "<b>📡 Telegraph Status</b>\n",
+                ]
+                if TELEGRAPH_ACCESS_TOKEN:
+                    lines.append("✅ Connected to a Telegraph account.")
+                    lines.append(f"<code>TELEGRAPH_ACCESS_TOKEN={TELEGRAPH_ACCESS_TOKEN}</code>")
+                else:
+                    lines.append("🆕 A new Telegraph account was created for this bot.")
+                    lines.append(f"<code>TELEGRAPH_ACCESS_TOKEN={token}</code>")
+                    lines.append("\nAdd this to your <code>.env</code> file to persist the account.")
+            else:
+                lines = [
+                    "<b>📡 Telegraph Status</b>\n",
+                    "❌ Failed to create a Telegraph account."
+                ]
+
+            _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                "chat_id": chat_id, "text": "\n".join(lines), "parse_mode": "HTML"
+            })
+            return {"ok": True}
         if text and text.startswith("/request_admin"):
             name = message["from"].get("first_name", "")
             add_pending_admin(user_id, name)

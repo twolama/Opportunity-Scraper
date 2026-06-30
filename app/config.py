@@ -23,6 +23,10 @@ else:
     BOT_OWNER_ID = 0
 
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID") or ""
+
+TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", "")
+TELEGRAPH_AUTHOR_NAME = os.getenv("TELEGRAPH_AUTHOR_NAME", "Opportunity Spot")
+TELEGRAPH_AUTHOR_URL = os.getenv("TELEGRAPH_AUTHOR_URL", "https://t.me/opportunityspots")
 PUBLIC_URL = os.getenv("PUBLIC_URL") or ""
 USE_POLLING = os.getenv("USE_POLLING", "true").lower() == "true"
 RUN_SCHEDULER = os.getenv("RUN_SCHEDULER", "true").lower() == "true"
