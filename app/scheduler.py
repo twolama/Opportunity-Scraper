@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import sentry_sdk
 from app.scraper import fetch_opportunities_by_date_safe
 from app.database import delete_old_entries, get_schedule_times, get_unposted_opportunities
-from app.telegram_bot import post_to_telegram, post_to_all_channels
+from app.telegram_bot import post_to_all_channels
 from app.rate_limiter import telegram_limiter
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,6 @@ _last_scrape: list[str] = []
 _last_post: list[str] = []
 _lock = Lock()
 _catch_up_scrape_done_today: str = ""
-_catch_up_post_done_today: str = ""
 _telegram_failures: int = 0
 _telegram_failures_lock = Lock()
 _TELEGRAM_CIRCUIT_BREAKER_MAX = 5
@@ -96,11 +95,6 @@ def _catch_up_scrapes():
     _catch_up_scrape_done_today = today
 
 
-def _passed_post_slots_today() -> int:
-    now = datetime.now().strftime("%H:%M")
-    post_times = get_schedule_times("post")
-    return sum(1 for t in sorted(post_times) if t < now)
-
 def _remaining_post_slots_today() -> int:
     now = datetime.now().strftime("%H:%M")
     post_times = get_schedule_times("post")
@@ -158,31 +152,10 @@ def run_post():
         with _telegram_failures_lock:
             _telegram_failures += 1
 
-def _catch_up_posts():
-    global _catch_up_post_done_today
-    today = _today_str()
-    if _catch_up_post_done_today == today:
-        return
-    passed = _passed_post_slots_today()
-    if passed <= 0:
-        _catch_up_post_done_today = today
-        return
-    unposted = get_unposted_opportunities()
-    total = len(get_schedule_times("post"))
-    if not unposted or total <= 0:
-        _catch_up_post_done_today = today
-        return
-    batch_per_slot = math.ceil(len(unposted) / total)
-    batch_size = min(batch_per_slot * passed, len(unposted))
-    batch = unposted[:batch_size]
-    logger.info("Catch-up: posting %d/%d opportunities (%d slot(s) missed)", len(batch), len(unposted), passed)
-    sent = _post_batch(batch)
-    _catch_up_post_done_today = today
-
 def start_scheduler(shutdown: threading.Event | None = None):
     reload_schedules()
     _catch_up_scrapes()
-    _catch_up_posts()
+    run_post()
     check_counter = 0
     while not (shutdown and shutdown.is_set()):
         try:
