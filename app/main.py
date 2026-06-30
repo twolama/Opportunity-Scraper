@@ -44,7 +44,7 @@ from app.schemas import (
     SearchResultOut, StatsOut, AdminOut, AdminCreate,
     RootOut, RunOnceOut, WebhookOut,
 )
-from app.config import TELEGRAM_API_URL, BOT_OWNER_ID, PUBLIC_URL, USE_POLLING, RUN_SCHEDULER, API_KEY, SENTRY_DSN, TELEGRAM_CHANNEL_ID, TELEGRAM_CHANNEL_ID
+from app.config import TELEGRAM_API_URL, BOT_OWNER_ID, PUBLIC_URL, USE_POLLING, RUN_SCHEDULER, API_KEY, SENTRY_DSN, TELEGRAM_CHANNEL_ID
 
 if SENTRY_DSN:
     try:

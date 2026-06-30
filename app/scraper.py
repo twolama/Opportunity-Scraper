@@ -161,6 +161,14 @@ def fetch_opportunities_by_date(target_date=None):
     if not target_date:
         target_date = (datetime.now() - timedelta(days=1)).strftime("%Y/%m/%d")
 
+    # Log weekend awareness
+    try:
+        dt = datetime.strptime(target_date.replace("/", "-"), "%Y-%m-%d")
+        if dt.weekday() >= 5:
+            _logger.info("Target date %s is a weekend — few or no articles expected", target_date)
+    except ValueError:
+        pass
+
     url = f"{BASE_URL}/{target_date}/"
     _logger.info("Fetching %s", url)
 
@@ -171,7 +179,10 @@ def fetch_opportunities_by_date(target_date=None):
 
     soup = BeautifulSoup(page_response.text, "html.parser")
     articles = soup.select("article")
-    _logger.info("Found %d articles.", len(articles))
+    _logger.info("Found %d articles on %s.", len(articles), target_date)
+
+    if not articles:
+        return []
 
     # Phase 1: fetch all detail pages in parallel
     candidates = []
@@ -183,6 +194,7 @@ def fetch_opportunities_by_date(target_date=None):
                 candidates.append(opp)
 
     if not candidates:
+        _logger.info("No candidates with external links for %s", target_date)
         return []
 
     # Phase 2: batch-check existence
@@ -196,6 +208,7 @@ def fetch_opportunities_by_date(target_date=None):
         if saved == len(batch):
             return batch
         return []
+    _logger.info("All %d candidates already exist for %s", len(candidates), target_date)
     return []
 
 def fetch_opportunities_by_date_safe(target_date=None):

@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 _last_scrape: list[str] = []
 _last_post: list[str] = []
 _lock = Lock()
-_catch_up_done_today: str = ""
+_catch_up_scrape_done_today: str = ""
+_catch_up_post_done_today: str = ""
 _telegram_failures: int = 0
 _telegram_failures_lock = Lock()
 _TELEGRAM_CIRCUIT_BREAKER_MAX = 5
@@ -67,22 +68,32 @@ def _passed_scrape_slots_today() -> int:
 
 
 def _catch_up_scrapes():
-    global _catch_up_done_today
+    global _catch_up_scrape_done_today
     today = _today_str()
-    if _catch_up_done_today == today:
+    if _catch_up_scrape_done_today == today:
         return
     passed = _passed_scrape_slots_today()
     if passed <= 0:
-        _catch_up_done_today = today
+        _catch_up_scrape_done_today = today
         return
-    for i in range(min(passed, 5)):
-        day = (datetime.now() - timedelta(days=i + 1)).strftime("%Y/%m/%d")
-        logger.info("Catch-up search for %s (%d/%d missed slot(s))", day, i + 1, passed)
+    weekday_count = 0
+    max_iter = 10
+    target = min(passed, 5)
+    for i in range(max_iter):
+        if weekday_count >= target:
+            break
+        day_dt = datetime.now() - timedelta(days=i + 1)
+        if day_dt.weekday() >= 5:
+            logger.info("Catch-up skipping weekend %s (no articles expected)", day_dt.strftime("%Y/%m/%d"))
+            continue
+        weekday_count += 1
+        day = day_dt.strftime("%Y/%m/%d")
+        logger.info("Catch-up search for %s (%d/%d weekday(s))", day, weekday_count, target)
         try:
             fetch_opportunities_by_date_safe(day)
         except Exception:
             logger.exception(f"Catch-up search failed for {day}")
-    _catch_up_done_today = today
+    _catch_up_scrape_done_today = today
 
 
 def _passed_post_slots_today() -> int:
@@ -148,25 +159,25 @@ def run_post():
             _telegram_failures += 1
 
 def _catch_up_posts():
-    global _catch_up_done_today
+    global _catch_up_post_done_today
     today = _today_str()
-    if _catch_up_done_today == today:
+    if _catch_up_post_done_today == today:
         return
     passed = _passed_post_slots_today()
     if passed <= 0:
-        _catch_up_done_today = today
+        _catch_up_post_done_today = today
         return
     unposted = get_unposted_opportunities()
     total = len(get_schedule_times("post"))
     if not unposted or total <= 0:
-        _catch_up_done_today = today
+        _catch_up_post_done_today = today
         return
     batch_per_slot = math.ceil(len(unposted) / total)
     batch_size = min(batch_per_slot * passed, len(unposted))
     batch = unposted[:batch_size]
     logger.info("Catch-up: posting %d/%d opportunities (%d slot(s) missed)", len(batch), len(unposted), passed)
     sent = _post_batch(batch)
-    _catch_up_done_today = today
+    _catch_up_post_done_today = today
 
 def start_scheduler(shutdown: threading.Event | None = None):
     reload_schedules()

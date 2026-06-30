@@ -654,6 +654,7 @@ def bulk_save_opportunities(opportunities: list[dict], scraped_date: Optional[st
                 _set_opportunity_tags(db, row_id, tags)
         return len(new_data)
     except Exception:
+        _logger.exception("bulk_save_opportunities failed")
         return 0
 
 

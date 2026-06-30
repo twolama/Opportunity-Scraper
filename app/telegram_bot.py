@@ -1,21 +1,15 @@
-import os
 import re
 import time
 import random
 import logging
 import requests
 from typing import Optional
-from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 import sentry_sdk
+from app.config import TELEGRAM_API_URL, TELEGRAM_CHANNEL_ID, TELEGRAM_BOT_TOKEN
 from app.database import update_posted_status, get_unposted_opportunities
 from app.utils import format_telegram_message
-
-load_dotenv()
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 
 from app.http_client import http as _http, sanitize as _sanitize, strip_invisible as _strip_invisible
 _logger = logging.getLogger(__name__)
@@ -63,9 +57,9 @@ def _is_retryable(exc: BaseException) -> bool:
 )
 def _post_to_telegram_with_retry(payload: dict, use_photo: bool = False) -> requests.Response:
     if use_photo:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+        url = f"{TELEGRAM_API_URL}/sendPhoto"
     else:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        url = f"{TELEGRAM_API_URL}/sendMessage"
     resp = _http.post(url, json=payload, timeout=15)
     resp.raise_for_status()
     return resp
