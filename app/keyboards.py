@@ -103,12 +103,21 @@ def build_stats_keyboard(total, unposted, posted):
     keyboard.append([{"text": "🔙 Main Menu", "callback_data": "main_menu"}])
     return {"inline_keyboard": keyboard}
 
+_STEP_EDIT_ICONS = {
+    "image": "🖼", "deadline": "📅",
+}
+_STEP_PREVIEW_ICONS = {
+    "title": "📌", "description": "📝", "image": "🖼",
+    "link": "🔗", "deadline": "📅",
+}
+
 def build_custom_post_keyboard(step):
     keyboard = []
+    icon = _STEP_EDIT_ICONS.get(step, "•")
     if step == "image":
-        keyboard.append([{"text": "⏭️ Skip Image", "callback_data": "create_post_skip_image"}])
+        keyboard.append([{"text": f"{icon} Skip Image", "callback_data": "create_post_skip_image"}])
     if step == "deadline":
-        keyboard.append([{"text": "⏭️ Skip Deadline", "callback_data": "create_post_skip_deadline"}])
+        keyboard.append([{"text": f"{icon} Skip Deadline", "callback_data": "create_post_skip_deadline"}])
     keyboard.append([{"text": "❌ Cancel", "callback_data": "create_post_cancel"}])
     return {"inline_keyboard": keyboard}
 
@@ -116,13 +125,13 @@ def build_custom_post_preview_keyboard():
     keyboard = [
         [{"text": "✅ Confirm & Post", "callback_data": "create_post_confirm"}],
         [
-            {"text": "✏️ Title", "callback_data": "create_post_edit_title"},
-            {"text": "✏️ Description", "callback_data": "create_post_edit_description"},
+            {"text": "📌 Title", "callback_data": "create_post_edit_title"},
+            {"text": "📝 Description", "callback_data": "create_post_edit_description"},
         ],
         [
-            {"text": "✏️ Image", "callback_data": "create_post_edit_image"},
-            {"text": "✏️ Link", "callback_data": "create_post_edit_link"},
-            {"text": "✏️ Deadline", "callback_data": "create_post_edit_deadline"},
+            {"text": "🖼 Image", "callback_data": "create_post_edit_image"},
+            {"text": "🔗 Link", "callback_data": "create_post_edit_link"},
+            {"text": "📅 Deadline", "callback_data": "create_post_edit_deadline"},
         ],
         [{"text": "❌ Cancel", "callback_data": "create_post_cancel"}],
     ]
