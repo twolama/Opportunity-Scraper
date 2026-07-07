@@ -104,18 +104,23 @@ def _render_custom_post_wizard(state: dict, is_complete: bool = False) -> str:
     lines = ["━━━ 📝 <b>Create Post</b> ━━━\n"]
     current_step = state.get("step", "title")
     editing = state.get("editing", False)
+    current_idx = _STEP_ORDER.index(current_step) if current_step in _STEP_ORDER else -1
 
-    for key, label in [("title", "Title"), ("description", "Description"), ("image", "Image"), ("link", "Link"), ("deadline", "Deadline")]:
+    for i, (key, label) in enumerate([("title", "Title"), ("description", "Description"), ("image", "Image"), ("link", "Link"), ("deadline", "Deadline")]):
         icon = _STEP_ICONS.get(key, "•")
         value = state.get(key)
         is_current = key == current_step and not editing and not is_complete
+        behind = i < current_idx or is_complete
 
-        if key == "image" and state.get("image_file_id"):
-            lines.append(f"{icon} <b>{label}:</b> \u200b✓ Attached")
-        elif key == "image" and is_current:
-            lines.append(f"{icon} <b>{label}:</b> <i>send photo or skip</i>")
-        elif key == "image":
-            lines.append(f"{icon} <b>{label}:</b> <i>skipped</i>")
+        if key == "image":
+            if state.get("image_file_id"):
+                lines.append(f"{icon} <b>{label}:</b> \u200b✓ Attached")
+            elif is_current:
+                lines.append(f"{icon} <b>{label}:</b> <i>send photo or skip</i>")
+            elif behind:
+                lines.append(f"{icon} <b>{label}:</b> <i>skipped</i>")
+            else:
+                lines.append(f"{icon} <b>{label}:</b> <i>waiting...</i>")
         elif value:
             display = str(value)[:60]
             if len(str(value)) > 60:
@@ -123,8 +128,10 @@ def _render_custom_post_wizard(state: dict, is_complete: bool = False) -> str:
             lines.append(f"{icon} <b>{label}:</b> {html.escape(display)}")
         elif is_current:
             lines.append(f"{icon} <b>{label}:</b> <i>pending...</i>")
-        else:
+        elif behind:
             lines.append(f"{icon} <b>{label}:</b> <i>skipped</i>")
+        else:
+            lines.append(f"{icon} <b>{label}:</b> <i>waiting...</i>")
 
     lines.append("")
     icon = _STEP_ICONS.get(current_step, "•")
