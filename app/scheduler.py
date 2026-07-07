@@ -51,9 +51,19 @@ def reload_schedules():
         logger.info("Post times: %s", post_times)
 
 def run_scrape():
+    today = datetime.now()
+    if today.weekday() >= 5:
+        logger.info("Skipping scrape on weekend")
+        return
     logger.info("Running search...")
     try:
-        fetch_opportunities_by_date_safe()
+        if today.weekday() == 0:
+            friday = today - timedelta(days=3)
+            target_date = friday.strftime("%Y/%m/%d")
+            logger.info("Monday scrape targeting %s (last weekday)", target_date)
+            fetch_opportunities_by_date_safe(target_date)
+        else:
+            fetch_opportunities_by_date_safe()
         delete_old_entries()
         logger.info("Search task completed")
     except Exception as e:
@@ -117,6 +127,10 @@ def _post_batch(batch: list) -> int:
 
 def run_post():
     global _telegram_failures
+    today = datetime.now()
+    if today.weekday() >= 5:
+        logger.info("Skipping post on weekend")
+        return
     with _telegram_failures_lock:
         if _telegram_failures >= _TELEGRAM_CIRCUIT_BREAKER_MAX:
             logger.warning("Telegram circuit breaker open (%s consecutive failures), skipping post cycle", _telegram_failures)
