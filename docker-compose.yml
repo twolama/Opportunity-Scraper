@@ -10,6 +10,7 @@ services:
       - 8.8.8.8
     volumes:
       - ./docker/resolv.conf:/etc/resolv.conf
+      - ./app:/app/app
     ports:
       - "8000:8000"
     env_file:
