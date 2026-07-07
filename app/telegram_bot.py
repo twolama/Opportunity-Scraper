@@ -107,7 +107,9 @@ def post_to_telegram(opportunity: dict, chat_id: Optional[str] = None) -> bool:
                     raise
 
             _logger.info(f"Posted directly to Telegram: {opportunity['title']} -> {target}")
-            update_posted_status(opportunity["id"])
+            opp_id = opportunity.get("id")
+            if opp_id:
+                update_posted_status(opp_id)
             return True
 
         # Message too long — try Telegraph
@@ -151,7 +153,9 @@ def post_to_telegram(opportunity: dict, chat_id: Optional[str] = None) -> bool:
                 response = _post_to_telegram_with_retry(payload, use_photo=False)
 
             _logger.info(f"Posted via Telegraph: {opportunity['title']} -> {target}")
-            update_posted_status(opportunity["id"])
+            opp_id = opportunity.get("id")
+            if opp_id:
+                update_posted_status(opp_id)
             return True
 
         # Telegraph failed — fall back to splitting
@@ -210,7 +214,9 @@ def post_to_telegram(opportunity: dict, chat_id: Optional[str] = None) -> bool:
         _logger.info(
             f"Posted to Telegram (split fallback): {opportunity['title']} -> {target} ({len(chunks)} chunk(s))"
         )
-        update_posted_status(opportunity["id"])
+        opp_id = opportunity.get("id")
+        if opp_id:
+            update_posted_status(opp_id)
         return True
 
     except requests.RequestException as e:

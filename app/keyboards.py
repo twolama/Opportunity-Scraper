@@ -22,6 +22,9 @@ def build_main_menu(user_id=None):
     ]
     if is_owner:
         keyboard.append([
+            {"text": "✏️ Create Post", "callback_data": "create_post"}
+        ])
+        keyboard.append([
             {"text": "⏰ Schedules", "callback_data": "list_schedules"},
             {"text": "📢 Channels", "callback_data": "channels"},
             {"text": "👥 Admins", "callback_data": "admin_menu"}
@@ -98,6 +101,31 @@ def build_stats_keyboard(total, unposted, posted):
     if total:
         keyboard.append([{"text": f"📄 View All ({total})", "callback_data": "browse_all_0"}])
     keyboard.append([{"text": "🔙 Main Menu", "callback_data": "main_menu"}])
+    return {"inline_keyboard": keyboard}
+
+def build_custom_post_keyboard(step):
+    keyboard = []
+    if step == "image":
+        keyboard.append([{"text": "⏭️ Skip Image", "callback_data": "create_post_skip_image"}])
+    if step == "deadline":
+        keyboard.append([{"text": "⏭️ Skip Deadline", "callback_data": "create_post_skip_deadline"}])
+    keyboard.append([{"text": "❌ Cancel", "callback_data": "create_post_cancel"}])
+    return {"inline_keyboard": keyboard}
+
+def build_custom_post_preview_keyboard():
+    keyboard = [
+        [{"text": "✅ Confirm & Post", "callback_data": "create_post_confirm"}],
+        [
+            {"text": "✏️ Title", "callback_data": "create_post_edit_title"},
+            {"text": "✏️ Description", "callback_data": "create_post_edit_description"},
+        ],
+        [
+            {"text": "✏️ Image", "callback_data": "create_post_edit_image"},
+            {"text": "✏️ Link", "callback_data": "create_post_edit_link"},
+            {"text": "✏️ Deadline", "callback_data": "create_post_edit_deadline"},
+        ],
+        [{"text": "❌ Cancel", "callback_data": "create_post_cancel"}],
+    ]
     return {"inline_keyboard": keyboard}
 
 def build_browse_keyboard(page, total, total_count, mode):

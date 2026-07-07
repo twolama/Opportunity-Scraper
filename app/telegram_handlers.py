@@ -41,12 +41,14 @@ from app.database import (
     remove_channel,
     get_active_channels,
 )
-from app.telegram_bot import post_to_telegram
+from app.telegram_bot import post_to_telegram, post_to_all_channels
+from app.utils import format_telegram_message
 from app.config import TELEGRAM_API_URL, BOT_OWNER_ID, TELEGRAM_CHANNEL_ID
 from app.keyboards import (
     build_main_menu, build_date_nav_keyboard, build_year_picker,
     build_month_picker, build_day_picker, build_search_keyboard,
     build_stats_keyboard, build_browse_keyboard,
+    build_custom_post_keyboard, build_custom_post_preview_keyboard,
 )
 import sentry_sdk
 from app.http_client import http as _http, sanitize as _sanitize
@@ -68,6 +70,64 @@ _admin_ids: set[int] = set()
 _admin_names: dict[int, str] = {}
 _last_admin_refresh: float = 0
 _ADMIN_CACHE_TTL = 10
+
+# --- Custom post composer state (in-memory) ---
+_pending_custom_posts: dict[int, dict] = {}
+
+def _get_custom_post_state(user_id: int) -> dict | None:
+    return _pending_custom_posts.get(user_id)
+
+def _set_custom_post_state(user_id: int, **fields):
+    if user_id not in _pending_custom_posts:
+        _pending_custom_posts[user_id] = {}
+    _pending_custom_posts[user_id].update(fields)
+
+def _clear_custom_post_state(user_id: int):
+    _pending_custom_posts.pop(user_id, None)
+
+_STEP_PROMPTS = {
+    "title": "✏️ <b>Step 1:</b> Send me the post title.",
+    "description": "✏️ <b>Step 2:</b> Send me the post description/body.",
+    "image": "✏️ <b>Step 3:</b> Send an image for the post (optional).",
+    "link": "✏️ <b>Step 4:</b> Send the URL for the <b>Apply</b> button.",
+    "deadline": "✏️ <b>Step 5:</b> Send a deadline (optional, e.g. <i>July 15, 2026</i>).",
+}
+
+def _ask_custom_post_step(chat_id: int, step: str):
+    prompt = _STEP_PROMPTS.get(step, "")
+    _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": prompt,
+        "parse_mode": "HTML",
+        "reply_markup": build_custom_post_keyboard(step),
+    })
+
+def _send_custom_post_preview(chat_id: int, state: dict):
+    opp = {
+        "title": state.get("title", ""),
+        "description": state.get("description", ""),
+        "link": state.get("link", ""),
+        "deadline": state.get("deadline", ""),
+        "thumbnail": state.get("image_file_id", ""),
+    }
+    message = format_telegram_message(opp)
+    image_file_id = state.get("image_file_id")
+    if image_file_id:
+        _http.post(f"{TELEGRAM_API_URL}/sendPhoto", json={
+            "chat_id": chat_id,
+            "photo": image_file_id,
+            "caption": message,
+            "parse_mode": "HTML",
+            "reply_markup": build_custom_post_preview_keyboard(),
+        })
+    else:
+        _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False,
+            "reply_markup": build_custom_post_preview_keyboard(),
+        })
 
 
 def _refresh_admin_cache():
@@ -509,7 +569,43 @@ def process_telegram_update(data, run_in_background=None):
         _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
             "chat_id": chat_id, "text": msg, "parse_mode": "HTML"
         })
+    elif message and message.get("photo") and user_id == BOT_OWNER_ID:
+        state = _get_custom_post_state(user_id)
+        if state and state.get("step") == "image":
+            file_id = message["photo"][-1]["file_id"]
+            if state.get("editing"):
+                _set_custom_post_state(user_id, image_file_id=file_id, editing=False)
+                _send_custom_post_preview(chat_id, _get_custom_post_state(user_id))
+            else:
+                _set_custom_post_state(user_id, step="link", image_file_id=file_id)
+                _ask_custom_post_step(chat_id, "link")
+            return {"ok": True}
+        _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": "Received a photo, but no pending action needs one.",
+            "parse_mode": "HTML"
+        })
+        return {"ok": True}
     elif message and user_id == BOT_OWNER_ID and text and not text.startswith("/"):
+        state = _get_custom_post_state(user_id)
+        if state:
+            step = state.get("step")
+            if state.get("editing"):
+                _set_custom_post_state(user_id, **{step: text}, editing=False)
+                _send_custom_post_preview(chat_id, _get_custom_post_state(user_id))
+            elif step == "title":
+                _set_custom_post_state(user_id, title=text, step="description")
+                _ask_custom_post_step(chat_id, "description")
+            elif step == "description":
+                _set_custom_post_state(user_id, description=text, step="image")
+                _ask_custom_post_step(chat_id, "image")
+            elif step == "link":
+                _set_custom_post_state(user_id, link=text, step="deadline")
+                _ask_custom_post_step(chat_id, "deadline")
+            elif step == "deadline":
+                _set_custom_post_state(user_id, deadline=text, editing=False)
+                _send_custom_post_preview(chat_id, _get_custom_post_state(user_id))
+            return {"ok": True}
         pending_type = pop_pending_schedule_input(user_id)
         if pending_type:
             time_str = parse_time_12h(text)
@@ -1346,6 +1442,99 @@ def process_telegram_update(data, run_in_background=None):
                 "disable_web_page_preview": True,
                 "reply_markup": build_browse_keyboard(page, result["total"], result["total"], mode)
             })
+        elif text == "create_post" and user_id == BOT_OWNER_ID:
+            _set_custom_post_state(user_id, step="title", editing=False)
+            safe_edit_message_text({
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "text": "✏️ <b>Create Custom Post</b>\n\n" + _STEP_PROMPTS["title"],
+                "parse_mode": "HTML",
+                "reply_markup": build_custom_post_keyboard("title"),
+            })
+        elif text == "create_post_skip_image" and user_id == BOT_OWNER_ID:
+            state = _get_custom_post_state(user_id)
+            if state:
+                _set_custom_post_state(user_id, image_file_id="")
+                if state.get("editing"):
+                    _set_custom_post_state(user_id, editing=False)
+                    _send_custom_post_preview(chat_id, _get_custom_post_state(user_id))
+                else:
+                    _set_custom_post_state(user_id, step="link")
+                    msg_id = callback_query["message"]["message_id"]
+                    safe_edit_message_text({
+                        "chat_id": chat_id,
+                        "message_id": msg_id,
+                        "text": "⏭️ Image skipped.\n\n" + _STEP_PROMPTS["link"],
+                        "parse_mode": "HTML",
+                        "reply_markup": build_custom_post_keyboard("link"),
+                    })
+        elif text == "create_post_skip_deadline" and user_id == BOT_OWNER_ID:
+            state = _get_custom_post_state(user_id)
+            if state:
+                _set_custom_post_state(user_id, deadline="", editing=False)
+                _send_custom_post_preview(chat_id, _get_custom_post_state(user_id))
+        elif text == "create_post_confirm" and user_id == BOT_OWNER_ID:
+            state = _get_custom_post_state(user_id)
+            if state:
+                if not state.get("title") or not state.get("link"):
+                    _http.post(f"{TELEGRAM_API_URL}/answerCallbackQuery", json={
+                        "callback_query_id": callback_query.get("id"),
+                        "text": "Title and link are required.",
+                        "show_alert": True,
+                    })
+                else:
+                    opp = {
+                        "title": state["title"],
+                        "description": state.get("description", ""),
+                        "link": state["link"],
+                        "deadline": state.get("deadline", ""),
+                        "thumbnail": state.get("image_file_id", ""),
+                    }
+                    def _post_and_notify():
+                        ok = post_to_all_channels(opp)
+                        _clear_custom_post_state(user_id)
+                        if ok:
+                            _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                                "chat_id": chat_id,
+                                "text": "✅ <b>Custom post sent to all channels!</b>",
+                                "parse_mode": "HTML",
+                                "reply_markup": build_main_menu(user_id),
+                            })
+                        else:
+                            _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
+                                "chat_id": chat_id,
+                                "text": "❌ Failed to post. Check that channels are configured.",
+                                "parse_mode": "HTML",
+                                "reply_markup": build_main_menu(user_id),
+                            })
+                    Thread(target=_post_and_notify, daemon=True).start()
+                    _http.post(f"{TELEGRAM_API_URL}/answerCallbackQuery", json={
+                        "callback_query_id": callback_query.get("id"),
+                        "text": "Posting...",
+                        "show_alert": False,
+                    })
+        elif text == "create_post_cancel" and user_id == BOT_OWNER_ID:
+            _clear_custom_post_state(user_id)
+            safe_edit_message_text({
+                "chat_id": chat_id,
+                "message_id": callback_query["message"]["message_id"],
+                "text": "❌ Post creation cancelled.",
+                "parse_mode": "HTML",
+                "reply_markup": build_main_menu(user_id),
+            })
+        elif text.startswith("create_post_edit_") and user_id == BOT_OWNER_ID:
+            field = text.replace("create_post_edit_", "")
+            state = _get_custom_post_state(user_id)
+            if state:
+                _set_custom_post_state(user_id, step=field, editing=True)
+                prompt = _STEP_PROMPTS.get(field, f"Send the new {field}:")
+                safe_edit_message_text({
+                    "chat_id": chat_id,
+                    "message_id": callback_query["message"]["message_id"],
+                    "text": f"✏️ Editing <b>{field.title()}</b>.\n\n{prompt}",
+                    "parse_mode": "HTML",
+                    "reply_markup": build_custom_post_keyboard(field),
+                })
         else:
             logging.warning(f"Unhandled callback data: {text}")
             callback_id = callback_query.get("id")
