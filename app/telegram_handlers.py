@@ -170,7 +170,9 @@ def _update_custom_post_wizard(user_id: int, is_complete: bool = False):
         payload["reply_markup"] = build_custom_post_keyboard(step)
     elif not is_complete and state.get("editing"):
         payload["reply_markup"] = build_custom_post_keyboard(step)
-    safe_edit_message_text(payload)
+    new_id = safe_edit_message_text(payload)
+    if new_id is not None:
+        _set_custom_post_state(user_id, wizard_message_id=new_id)
 
 
 def _advance_custom_post_step(user_id: int, chat_id: int, **field_value):
@@ -245,7 +247,10 @@ def _is_authorized(user_id: int) -> bool:
 def get_stats():
     return get_stats_from_db()
 
-def safe_edit_message_text(payload):
+def safe_edit_message_text(payload) -> int | None:
+    """Edit a message, falling back to sendMessage if the edit fails.
+    Returns the new message_id if a fallback send occurred, None otherwise.
+    """
     resp = _http.post(f"{TELEGRAM_API_URL}/editMessageText", json=payload)
     try:
         data = resp.json()
@@ -254,11 +259,17 @@ def safe_edit_message_text(payload):
     if not resp.ok or not data.get("ok", True):
         err = data.get("description", "")
         if "message is not modified" in err:
-            return
+            return None
         logging.warning(_sanitize(f"editMessageText failed: {data}"))
         payload2 = payload.copy()
         payload2.pop("message_id", None)
-        _http.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload2)
+        resp2 = _http.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload2)
+        try:
+            result = resp2.json().get("result", {})
+            return result.get("message_id")
+        except Exception:
+            return None
+    return None
 
 def _scrape_only(today, chat_id, message_id):
     try:
@@ -1574,7 +1585,10 @@ def process_telegram_update(data, run_in_background=None):
                         "thumbnail": state.get("image_file_id", ""),
                     }
                     def _post_and_notify():
-                        ok = post_to_all_channels(opp)
+                        try:
+                            ok = post_to_all_channels(opp)
+                        except Exception:
+                            ok = False
                         _clear_custom_post_state(user_id)
                         if ok:
                             _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
@@ -1586,7 +1600,7 @@ def process_telegram_update(data, run_in_background=None):
                         else:
                             _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
                                 "chat_id": chat_id,
-                                "text": "❌ Failed to post. Check that channels are configured.",
+                                "text": "❌ Failed to post. Check that channels are configured and DB is available.",
                                 "parse_mode": "HTML",
                                 "reply_markup": build_main_menu(user_id),
                             })

@@ -131,9 +131,13 @@ def remove_channel(chat_id: int) -> bool:
 
 
 def get_active_channels() -> list[dict]:
-    with get_session() as db:
-        rows = db.query(Channel).filter_by(is_active=True).order_by(Channel.created_at).all()
-        return [{"chat_id": r.chat_id, "title": r.title, "added_by": r.added_by, "created_at": r.created_at} for r in rows]
+    try:
+        with get_session() as db:
+            rows = db.query(Channel).filter_by(is_active=True).order_by(Channel.created_at).all()
+            return [{"chat_id": r.chat_id, "title": r.title, "added_by": r.added_by, "created_at": r.created_at} for r in rows]
+    except Exception:
+        _logger.warning("Failed to fetch active channels from DB", exc_info=True)
+        return []
 
 
 def get_channel(chat_id: int) -> Optional[dict]:
