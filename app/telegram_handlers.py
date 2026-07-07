@@ -100,54 +100,94 @@ _STEP_PROMPTS = {
     "deadline": "Send a deadline (optional, e.g. <i>July 15, 2026</i>).",
 }
 
+def _get_field_display(state: dict, field: str) -> str:
+    if field == "image":
+        return "🖼 [attached]" if state.get("image_file_id") else "None"
+    val = state.get(field, "")
+    return f'"{html.escape(val)}"' if val else "None"
+
 def _render_custom_post_wizard(state: dict, is_complete: bool = False) -> str:
-    lines = ["━━━ 📝 <b>Create Post</b> ━━━\n"]
     current_step = state.get("step", "title")
     editing = state.get("editing", False)
-    current_idx = _STEP_ORDER.index(current_step) if current_step in _STEP_ORDER else -1
-
-    for i, (key, label) in enumerate([("title", "Title"), ("description", "Description"), ("image", "Image"), ("link", "Link"), ("deadline", "Deadline")]):
-        icon = _STEP_ICONS.get(key, "•")
-        value = state.get(key)
-        is_current = key == current_step and not editing and not is_complete
-        behind = i < current_idx or is_complete
-
-        if key == "image":
-            if state.get("image_file_id"):
-                lines.append(f"{icon} <b>{label}:</b> \u200b✓ Attached")
-            elif is_current:
-                lines.append(f"{icon} <b>{label}:</b> <i>send photo or skip</i>")
-            elif behind:
-                lines.append(f"{icon} <b>{label}:</b> <i>skipped</i>")
-            else:
-                lines.append(f"{icon} <b>{label}:</b> <i>waiting...</i>")
-        elif value:
-            display = str(value)[:60]
-            if len(str(value)) > 60:
-                display += "..."
-            lines.append(f"{icon} <b>{label}:</b> {html.escape(display)}")
-        elif is_current:
-            lines.append(f"{icon} <b>{label}:</b> <i>pending...</i>")
-        elif behind:
-            lines.append(f"{icon} <b>{label}:</b> <i>skipped</i>")
-        else:
-            lines.append(f"{icon} <b>{label}:</b> <i>waiting...</i>")
-
-    lines.append("")
+    status = state.get("status")
+    total = len(_STEP_ORDER)
+    step_num = _STEP_NUMBERS.get(current_step, 0)
     icon = _STEP_ICONS.get(current_step, "•")
-    if is_complete:
-        lines.append("✅ <b>All fields complete!</b>")
-    elif editing:
-        prompt = _STEP_PROMPTS.get(current_step, f"Send the new {current_step}:")
-        lines.append(f"✏️ Editing <b>{current_step.title()}</b>")
-        lines.append(f"{icon} {prompt}")
-    elif current_step in _STEP_NUMBERS:
-        step_num = _STEP_NUMBERS[current_step]
-        prompt = _STEP_PROMPTS[current_step]
-        lines.append(f"─── Step {step_num} ───")
-        lines.append(f"{icon} {prompt}")
 
-    return "\n".join(lines)
+    if status == "posting":
+        return "━━━ 📝 <b>Create Post</b> ─── ⏳ Posting ━━━\n\nPosting to all channels..."
+    if status == "posted":
+        return "━━━ 📝 <b>Create Post</b> ─── ✅ Posted ━━━\n\n✅ Custom post sent to all channels!"
+    if status == "failed":
+        return "━━━ 📝 <b>Create Post</b> ─── ❌ Failed ━━━\n\n❌ Failed to post. Check channels and DB."
+    if status == "cancelled":
+        return "━━━ 📝 <b>Create Post</b> ─── ❌ Cancelled ━━━\n\nPost creation cancelled."
+
+    if is_complete:
+        title = state.get("title", "")
+        description = state.get("description", "")
+        link = state.get("link", "")
+        deadline = state.get("deadline", "")
+        image_file_id = state.get("image_file_id", "")
+        opp = {
+            "title": title,
+            "description": description,
+            "link": link,
+            "deadline": deadline,
+            "thumbnail": image_file_id or "",
+        }
+        preview = format_telegram_message(opp)
+        image_note = ""
+        if image_file_id:
+            image_note = "\n\n🖼 <b>Image attached</b>"
+        return (
+            "━━━ 📝 <b>Create Post</b> ─── Preview ━━━\n\n"
+            f"{preview}{image_note}"
+        )
+
+    if editing:
+        current_value = _get_field_display(state, current_step)
+        current_line = f"\n<b>Current:</b> {current_value}" if current_value else ""
+        prompt = _STEP_PROMPTS.get(current_step, f"Send the new {current_step}:")
+        return (
+            f"━━━ 📝 <b>Create Post</b> ─── ✏️ Step {step_num}/{total} ━━━\n\n"
+            f"Editing: {icon} <b>{current_step.title()}</b>{current_line}\n\n"
+            f"{prompt}"
+        )
+
+    completed_lines = []
+    for step in _STEP_ORDER:
+        if step == current_step:
+            break
+        s_icon = _STEP_ICONS[step]
+        if step == "image":
+            if state.get("image_file_id"):
+                completed_lines.append(f"✅ {s_icon} Image: attached")
+        elif step == "deadline":
+            val = state.get("deadline")
+            if val:
+                completed_lines.append(f"✅ {s_icon} Deadline: {html.escape(val)}")
+        else:
+            val = state.get(step)
+            if val:
+                display = val[:50] + "..." if len(val) > 50 else val
+                completed_lines.append(f"✅ {s_icon} {step.title()}: {html.escape(display)}")
+
+    completed_section = "\n".join(completed_lines)
+    if completed_section:
+        completed_section += "\n\n"
+
+    prompt = _STEP_PROMPTS.get(current_step, f"Send the {current_step}:")
+    skip_hint = ""
+    if current_step == "image":
+        skip_hint = "\n\n<i>Or tap Skip Image below.</i>"
+    if current_step == "deadline":
+        skip_hint = "\n\n<i>Or tap Skip Deadline below.</i>"
+
+    return (
+        f"━━━ 📝 <b>Create Post</b> ─── Step {step_num}/{total} ━━━\n\n"
+        f"{completed_section}{icon} {prompt}{skip_hint}"
+    )
 
 
 def _update_custom_post_wizard(user_id: int, is_complete: bool = False):
@@ -165,11 +205,15 @@ def _update_custom_post_wizard(user_id: int, is_complete: bool = False):
         "text": text,
         "parse_mode": "HTML",
     }
-    step = state.get("step", "title")
-    if not is_complete and not state.get("editing"):
-        payload["reply_markup"] = build_custom_post_keyboard(step)
-    elif not is_complete and state.get("editing"):
-        payload["reply_markup"] = build_custom_post_keyboard(step)
+    status = state.get("status")
+    if status == "posting":
+        payload["reply_markup"] = {"inline_keyboard": [[{"text": "⏳ Posting...", "callback_data": "noop"}]]}
+    elif status in ("posted", "failed", "cancelled"):
+        payload["reply_markup"] = build_main_menu(user_id)
+    elif is_complete:
+        payload["reply_markup"] = build_custom_post_preview_keyboard()
+    else:
+        payload["reply_markup"] = build_custom_post_keyboard(state.get("step", "title"))
     new_id = safe_edit_message_text(payload)
     if new_id is not None:
         _set_custom_post_state(user_id, wizard_message_id=new_id)
@@ -177,56 +221,35 @@ def _update_custom_post_wizard(user_id: int, is_complete: bool = False):
 
 def _advance_custom_post_step(user_id: int, chat_id: int, **field_value):
     state = _get_custom_post_state(user_id)
-    if not state:
+    if not state or state.get("status"):
         return
     current_step = state.get("step")
     _set_custom_post_state(user_id, **field_value)
     editing = state.get("editing", False)
     if editing:
         _set_custom_post_state(user_id, editing=False)
-        _update_custom_post_wizard(user_id, is_complete=True)
-        _send_custom_post_preview(chat_id, user_id)
+        try:
+            _update_custom_post_wizard(user_id, is_complete=True)
+        except Exception:
+            logger.warning("Failed to update wizard after editing", exc_info=True)
     else:
         idx = _STEP_ORDER.index(current_step)
         if idx + 1 < len(_STEP_ORDER):
             next_step = _STEP_ORDER[idx + 1]
             _set_custom_post_state(user_id, step=next_step)
-            _update_custom_post_wizard(user_id)
+            try:
+                _update_custom_post_wizard(user_id)
+            except Exception:
+                logger.warning("Failed to update wizard advancing %s -> %s", current_step, next_step, exc_info=True)
         else:
             _set_custom_post_state(user_id, step="complete")
-            _update_custom_post_wizard(user_id, is_complete=True)
-            _send_custom_post_preview(chat_id, user_id)
+            try:
+                _update_custom_post_wizard(user_id, is_complete=True)
+            except Exception:
+                logger.warning("Failed to update wizard on complete", exc_info=True)
 
 
-def _send_custom_post_preview(chat_id: int, user_id: int):
-    state = _get_custom_post_state(user_id)
-    if not state:
-        return
-    opp = {
-        "title": state.get("title", ""),
-        "description": state.get("description", ""),
-        "link": state.get("link", ""),
-        "deadline": state.get("deadline", ""),
-        "thumbnail": state.get("image_file_id", ""),
-    }
-    message = format_telegram_message(opp)
-    image_file_id = state.get("image_file_id")
-    if image_file_id:
-        _http.post(f"{TELEGRAM_API_URL}/sendPhoto", json={
-            "chat_id": chat_id,
-            "photo": image_file_id,
-            "caption": message,
-            "parse_mode": "HTML",
-            "reply_markup": build_custom_post_preview_keyboard(),
-        })
-    else:
-        _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": False,
-            "reply_markup": build_custom_post_preview_keyboard(),
-        })
+
 
 
 def _refresh_admin_cache():
@@ -251,7 +274,18 @@ def safe_edit_message_text(payload) -> int | None:
     """Edit a message, falling back to sendMessage if the edit fails.
     Returns the new message_id if a fallback send occurred, None otherwise.
     """
-    resp = _http.post(f"{TELEGRAM_API_URL}/editMessageText", json=payload)
+    try:
+        resp = _http.post(f"{TELEGRAM_API_URL}/editMessageText", json=payload)
+    except Exception as exc:
+        logging.warning(_sanitize(f"editMessageText network error: {exc}"))
+        payload2 = payload.copy()
+        payload2.pop("message_id", None)
+        try:
+            resp2 = _http.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload2)
+            result = resp2.json().get("result", {})
+            return result.get("message_id")
+        except Exception:
+            return None
     try:
         data = resp.json()
     except Exception:
@@ -263,8 +297,8 @@ def safe_edit_message_text(payload) -> int | None:
         logging.warning(_sanitize(f"editMessageText failed: {data}"))
         payload2 = payload.copy()
         payload2.pop("message_id", None)
-        resp2 = _http.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload2)
         try:
+            resp2 = _http.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload2)
             result = resp2.json().get("result", {})
             return result.get("message_id")
         except Exception:
@@ -682,6 +716,9 @@ def process_telegram_update(data, run_in_background=None):
         if state and state.get("step") == "image":
             file_id = message["photo"][-1]["file_id"]
             _advance_custom_post_step(user_id, chat_id, image_file_id=file_id)
+            _http.post(f"{TELEGRAM_API_URL}/deleteMessage", json={
+                "chat_id": chat_id, "message_id": message["message_id"]
+            })
             return {"ok": True}
         _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
             "chat_id": chat_id,
@@ -697,12 +734,17 @@ def process_telegram_update(data, run_in_background=None):
                 _advance_custom_post_step(user_id, chat_id, title=text)
             elif step == "description":
                 _advance_custom_post_step(user_id, chat_id, description=text)
+            elif step == "image":
+                _advance_custom_post_step(user_id, chat_id, image_file_id=text)
             elif step == "link":
                 _advance_custom_post_step(user_id, chat_id, link=text)
             elif step == "deadline":
                 _advance_custom_post_step(user_id, chat_id, deadline=text)
             elif state.get("editing"):
                 _advance_custom_post_step(user_id, chat_id, **{step: text})
+            _http.post(f"{TELEGRAM_API_URL}/deleteMessage", json={
+                "chat_id": chat_id, "message_id": message["message_id"]
+            })
             return {"ok": True}
         pending_type = pop_pending_schedule_input(user_id)
         if pending_type:
@@ -1541,35 +1583,21 @@ def process_telegram_update(data, run_in_background=None):
                 "reply_markup": build_browse_keyboard(page, result["total"], result["total"], mode)
             })
         elif text == "create_post" and user_id == BOT_OWNER_ID:
-            _set_custom_post_state(user_id, step="title", editing=False)
-            safe_edit_message_text({
-                "chat_id": chat_id,
-                "message_id": callback_query["message"]["message_id"],
-                "text": "✏️ <b>Post creation started!</b>\nFollow the wizard below.",
-                "parse_mode": "HTML",
-            })
-            resp = _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
-                "chat_id": chat_id,
-                "text": _render_custom_post_wizard({"step": "title"}),
-                "parse_mode": "HTML",
-                "reply_markup": build_custom_post_keyboard("title"),
-            })
-            try:
-                result = resp.json().get("result", {})
-                _set_custom_post_state(user_id,
-                    wizard_chat_id=chat_id,
-                    wizard_message_id=result.get("message_id"),
-                )
-            except Exception:
-                logger.warning("Failed to send wizard message", exc_info=True)
-                _clear_custom_post_state(user_id)
+            _set_custom_post_state(user_id,
+                step="title",
+                editing=False,
+                user_id=user_id,
+                wizard_chat_id=chat_id,
+                wizard_message_id=callback_query["message"]["message_id"],
+            )
+            _update_custom_post_wizard(user_id)
         elif text == "create_post_skip_image" and user_id == BOT_OWNER_ID:
             _advance_custom_post_step(user_id, chat_id, image_file_id="")
         elif text == "create_post_skip_deadline" and user_id == BOT_OWNER_ID:
             _advance_custom_post_step(user_id, chat_id, deadline="")
         elif text == "create_post_confirm" and user_id == BOT_OWNER_ID:
             state = _get_custom_post_state(user_id)
-            if state:
+            if state and not state.get("status"):
                 if not state.get("title") or not state.get("link"):
                     _http.post(f"{TELEGRAM_API_URL}/answerCallbackQuery", json={
                         "callback_query_id": callback_query.get("id"),
@@ -1584,26 +1612,19 @@ def process_telegram_update(data, run_in_background=None):
                         "deadline": state.get("deadline", ""),
                         "thumbnail": state.get("image_file_id", ""),
                     }
+                    _set_custom_post_state(user_id, status="posting")
+                    _update_custom_post_wizard(user_id)
                     def _post_and_notify():
                         try:
                             ok = post_to_all_channels(opp)
                         except Exception:
                             ok = False
+                        _set_custom_post_state(user_id, status="posted" if ok else "failed")
+                        try:
+                            _update_custom_post_wizard(user_id)
+                        except Exception:
+                            pass
                         _clear_custom_post_state(user_id)
-                        if ok:
-                            _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
-                                "chat_id": chat_id,
-                                "text": "✅ <b>Custom post sent to all channels!</b>",
-                                "parse_mode": "HTML",
-                                "reply_markup": build_main_menu(user_id),
-                            })
-                        else:
-                            _http.post(f"{TELEGRAM_API_URL}/sendMessage", json={
-                                "chat_id": chat_id,
-                                "text": "❌ Failed to post. Check that channels are configured and DB is available.",
-                                "parse_mode": "HTML",
-                                "reply_markup": build_main_menu(user_id),
-                            })
                     Thread(target=_post_and_notify, daemon=True).start()
                     _http.post(f"{TELEGRAM_API_URL}/answerCallbackQuery", json={
                         "callback_query_id": callback_query.get("id"),
@@ -1613,28 +1634,40 @@ def process_telegram_update(data, run_in_background=None):
         elif text == "create_post_cancel" and user_id == BOT_OWNER_ID:
             state = _get_custom_post_state(user_id)
             if state:
-                wc = state.get("wizard_chat_id")
-                wm = state.get("wizard_message_id")
-                _clear_custom_post_state(user_id)
-                if wc and wm and wm != callback_query["message"]["message_id"]:
+                if state.get("status"):
                     safe_edit_message_text({
-                        "chat_id": wc,
-                        "message_id": wm,
-                        "text": "❌ Cancelled.",
+                        "chat_id": chat_id,
+                        "message_id": callback_query["message"]["message_id"],
+                        "text": "🔙 Main Menu",
                         "parse_mode": "HTML",
+                        "reply_markup": build_main_menu(user_id),
                     })
-            safe_edit_message_text({
-                "chat_id": chat_id,
-                "message_id": callback_query["message"]["message_id"],
-                "text": "❌ Post creation cancelled.",
-                "parse_mode": "HTML",
-                "reply_markup": build_main_menu(user_id),
+                else:
+                    _set_custom_post_state(user_id, status="cancelled")
+                    _update_custom_post_wizard(user_id)
+                    _clear_custom_post_state(user_id)
+        elif text == "create_post_back" and user_id == BOT_OWNER_ID:
+            state = _get_custom_post_state(user_id)
+            if state and not state.get("status"):
+                current_step = state.get("step", "title")
+                idx = _STEP_ORDER.index(current_step)
+                if idx > 0:
+                    prev_step = _STEP_ORDER[idx - 1]
+                    _set_custom_post_state(user_id, step=prev_step, editing=False)
+                    _update_custom_post_wizard(user_id)
+            _http.post(f"{TELEGRAM_API_URL}/answerCallbackQuery", json={
+                "callback_query_id": callback_query.get("id"),
             })
         elif text.startswith("create_post_edit_") and user_id == BOT_OWNER_ID:
             field = text.replace("create_post_edit_", "")
             state = _get_custom_post_state(user_id)
-            if state:
-                _set_custom_post_state(user_id, step=field, editing=True)
+            if state and not state.get("status"):
+                _set_custom_post_state(user_id,
+                    step=field,
+                    editing=True,
+                    wizard_chat_id=chat_id,
+                    wizard_message_id=callback_query["message"]["message_id"],
+                )
                 _update_custom_post_wizard(user_id)
         else:
             logging.warning(f"Unhandled callback data: {text}")

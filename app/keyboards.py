@@ -103,21 +103,15 @@ def build_stats_keyboard(total, unposted, posted):
     keyboard.append([{"text": "🔙 Main Menu", "callback_data": "main_menu"}])
     return {"inline_keyboard": keyboard}
 
-_STEP_EDIT_ICONS = {
-    "image": "🖼", "deadline": "📅",
-}
-_STEP_PREVIEW_ICONS = {
-    "title": "📌", "description": "📝", "image": "🖼",
-    "link": "🔗", "deadline": "📅",
-}
-
 def build_custom_post_keyboard(step):
-    keyboard = []
-    icon = _STEP_EDIT_ICONS.get(step, "•")
+    row = []
+    if step != "title":
+        row.append({"text": "← Back", "callback_data": "create_post_back"})
     if step == "image":
-        keyboard.append([{"text": f"{icon} Skip Image", "callback_data": "create_post_skip_image"}])
+        row.append({"text": "⏭ Skip Image", "callback_data": "create_post_skip_image"})
     if step == "deadline":
-        keyboard.append([{"text": f"{icon} Skip Deadline", "callback_data": "create_post_skip_deadline"}])
+        row.append({"text": "⏭ Skip Deadline", "callback_data": "create_post_skip_deadline"})
+    keyboard = [row] if row else []
     keyboard.append([{"text": "❌ Cancel", "callback_data": "create_post_cancel"}])
     return {"inline_keyboard": keyboard}
 
